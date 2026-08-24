@@ -1,0 +1,112 @@
+#!/bin/bash
+set -eu
+
+DIST=dist
+IMG="$DIST/ubuntu-24.04-atlas.ext4"
+KERNEL="$DIST/vmlinux"
+
+mkdir -p "$DIST"
+rm -f "$IMG"
+
+truncate -s 2G "$IMG"
+mkfs.ext4 -q "$IMG"
+
+MNT=$(mktemp -d)
+mount "$IMG" "$MNT"
+
+debootstrap --variant=minbase noble "$MNT" http://archive.ubuntu.com/ubuntu
+
+# systemd-sysv provides /sbin/init. curl is needed by the MMDS helpers.
+# udev creates device units (e.g. dev-ttyS0.device) for the serial console.
+chroot "$MNT" apt-get install -y --no-install-recommends \
+    systemd-sysv udev openssh-server curl iproute2
+
+# fcnet.sh derives a static IPv4 and a matching IPv6 from the MAC address
+# (Firecracker convention) and writes resolv.conf. Both are unnumbered /32
+# point-to-point addresses. The host side is a fixed constant (network.go's
+# tapHostAddress4/6), the same on every VM's TAP. Only the interface
+# identity matters for forwarding, not the address, so any two VMs can use
+# any two private IPs.
+cat > "$MNT/usr/local/bin/fcnet.sh" <<'EOF'
+#!/bin/bash
+NAMESERVERS="8.8.8.8 1.1.1.1"
+{
+    for ns in $NAMESERVERS; do
+        echo "nameserver $ns"
+    done
+} > /etc/resolv.conf
+
+HOST4=169.254.1.1
+HOST6=fd00::1
+
+for dev in $(ls /sys/class/net | grep -v lo); do
+    mac_ip=$(ip link show dev "$dev" \
+        | grep link/ether \
+        | grep -Po "(?<=06:00:)([0-9a-f]{2}:?){4}"
+    )
+    [ -z "$mac_ip" ] && continue
+    ip=$(printf "%d.%d.%d.%d" $(echo "0x${mac_ip}" | sed "s/:/ 0x/g"))
+    ip addr add "${ip}/32" dev "$dev"
+    ip link set "$dev" up
+    ip route add "$HOST4/32" dev "$dev"
+    ip route add default via "$HOST4" dev "$dev"
+    # Route MMDS (169.254.169.254) directly on the link.
+    ip route add 169.254.0.0/16 dev "$dev" 2>/dev/null || true
+
+    IFS=. read -r o1 o2 o3 o4 <<< "$ip"
+    ip6=$(printf "fd00::%02x%02x:%02x%02x" "$o1" "$o2" "$o3" "$o4")
+    ip -6 addr add "${ip6}/128" dev "$dev"
+    ip -6 route add "$HOST6/128" dev "$dev"
+    ip -6 route add default via "$HOST6" dev "$dev"
+done
+
+# Apply the hostname Atlas assigned at VM creation (see MMDS local-hostname).
+# Written directly to the kernel and /etc/hostname: hostnamectl needs D-Bus,
+# which this minimal image does not install.
+TOKEN=$(curl -fsSL -X PUT -H "X-metadata-token-ttl-seconds: 60" http://169.254.169.254/latest/api/token 2>/dev/null)
+HOSTNAME=$(curl -fsSL -H "X-metadata-token:$TOKEN" http://169.254.169.254/local-hostname 2>/dev/null)
+if [ -n "$HOSTNAME" ]; then
+    echo "$HOSTNAME" > /etc/hostname
+    echo "$HOSTNAME" > /proc/sys/kernel/hostname
+fi
+EOF
+chmod +x "$MNT/usr/local/bin/fcnet.sh"
+
+cat > "$MNT/etc/systemd/system/fcnet.service" <<'EOF'
+[Unit]
+Description=Firecracker network setup
+After=network.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/fcnet.sh
+[Install]
+WantedBy=multi-user.target
+EOF
+mkdir -p "$MNT/etc/systemd/system/multi-user.target.wants"
+ln -sf /etc/systemd/system/fcnet.service "$MNT/etc/systemd/system/multi-user.target.wants/fcnet.service"
+
+# MMDS SSH key helper: fetches authorized keys from Firecracker MMDS v2.
+# MMDS v2 requires a short-lived token first, then uses it to read the data.
+cat > "$MNT/usr/local/bin/atlas-mmds-ssh-keys" <<'EOF'
+#!/bin/bash
+TOKEN=$(curl -fsSL -X PUT -H "X-metadata-token-ttl-seconds: 21600" http://169.254.169.254/latest/api/token 2>/dev/null)
+curl -fsSL -H "X-metadata-token:$TOKEN" http://169.254.169.254/ssh/authorized_keys 2>/dev/null
+EOF
+chmod +x "$MNT/usr/local/bin/atlas-mmds-ssh-keys"
+
+cat > "$MNT/etc/ssh/sshd_config.d/atlas.conf" <<'EOF'
+AuthorizedKeysCommand /usr/local/bin/atlas-mmds-ssh-keys
+AuthorizedKeysCommandUser root
+PasswordAuthentication no
+EOF
+
+# Serial getty on ttyS0 for console access. udev provides the device unit.
+mkdir -p "$MNT/etc/systemd/system/getty.target.wants"
+ln -sf /lib/systemd/system/serial-getty@.service "$MNT/etc/systemd/system/getty.target.wants/serial-getty@ttyS0.service"
+
+umount "$MNT"
+rmdir "$MNT"
+
+echo "Built $IMG"
+echo "Kernel: Ubuntu ships a compressed vmlinuz; Firecracker needs an uncompressed vmlinux ELF."
+echo "Use a prebuilt Firecracker kernel (e.g. vmlinux-5.10) for --kernel."

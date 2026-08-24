@@ -1,0 +1,14 @@
+[Unit]
+Description=Atlas VM %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/atlas-runtime /var/lib/atlas/machines/%i/config.toml
+Restart=always
+RestartSec=2
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=atlas-vms.target

@@ -1,0 +1,33 @@
+# Binaries
+atlas-runtime
+dist/
+dev-vm/
+*.ext4
+
+# Go build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+coverage.txt
+coverage.html
+
+# AI
+.claude
+.codex

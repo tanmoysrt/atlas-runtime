@@ -1,0 +1,10 @@
+#!/bin/bash
+set -eu
+MACHINES=/var/lib/atlas/machines
+WANTS="$1/atlas-vms.target.wants"
+mkdir -p "$WANTS"
+for config in "$MACHINES"/*/config.toml; do
+	[ -f "$config" ] || continue
+	machine="$(basename "$(dirname "$config")")"
+	ln -sf "/usr/lib/systemd/system/atlas-vm@.service" "$WANTS/atlas-vm@${machine}.service"
+done

@@ -1,0 +1,5 @@
+[Unit]
+Description=Atlas virtual machines
+
+[Install]
+WantedBy=multi-user.target
