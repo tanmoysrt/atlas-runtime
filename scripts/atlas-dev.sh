@@ -102,8 +102,7 @@ EOF
 	echo "Created $VM_NAME at $MACHINE_DIR/config.toml"
 fi
 
-# The runtime rewrites config.toml through a TOML encoder that indents keys
-# under their table header, so do not anchor the key to the start of the line.
+# The runtime rewrites config.toml with the keys indented under their table.
 LISTEN=$(grep -Po '^\s*listen\s*=\s*"\K[^"]+' "$MACHINE_DIR/config.toml" || true)
 if [ -z "$LISTEN" ]; then
 	echo "no [runtime] listen address in $MACHINE_DIR/config.toml" >&2
@@ -111,11 +110,17 @@ if [ -z "$LISTEN" ]; then
 fi
 BASE_URL="http://$LISTEN"
 
-echo "API: $BASE_URL"
-echo "Starting atlas-runtime for $VM_NAME. It needs root for ip, nft, and netns."
-echo "Ctrl-C stops the API process, not the VM or its network."
 echo
-	sudo env PATH="$DEV_DIR/firecracker:$PATH" "$BINARY" --enable-dashboard "$MACHINE_DIR/config.toml" &
+echo "  Dashboard and API: $BASE_URL"
+echo
+echo "Note it down: serial output takes over this terminal."
+echo "Needs root. Ctrl-C stops the API, not the VM."
+echo
+printf 'Press Enter to start %s ... ' "$VM_NAME"
+read -r _ || true
+echo
+
+sudo env PATH="$DEV_DIR/firecracker:$PATH" "$BINARY" --enable-dashboard "$MACHINE_DIR/config.toml" &
 RUNTIME_PID=$!
 trap 'kill "$RUNTIME_PID" 2>/dev/null' INT TERM
 

@@ -13,21 +13,26 @@ func PrepareRootfs(source, destination string, size int64) error {
 	if err := reflinkCopy(source, destination); err != nil {
 		return fmt.Errorf("reflink copy: %w", err)
 	}
+	return GrowRootfs(destination, size, true)
+}
 
-	currentSize := int64(0)
-	if fileInfo, err := os.Stat(destination); err == nil {
-		currentSize = fileInfo.Size()
-	}
-	if size <= currentSize {
+// GrowRootfs expands a rootfs file, and the filesystem inside it when
+// resizeFilesystem is set. Only an offline disk can be resized from the host.
+func GrowRootfs(path string, size int64, resizeFilesystem bool) error {
+	// A missing file is the pre-boot case: initialize builds it at the new size.
+	if fileInfo, err := os.Stat(path); err != nil || size <= fileInfo.Size() {
 		return nil
 	}
 
-	if err := exec.Command("truncate", "-s", fmt.Sprintf("%d", size), destination).Run(); err != nil {
+	if err := exec.Command("truncate", "-s", fmt.Sprintf("%d", size), path).Run(); err != nil {
 		return fmt.Errorf("truncate: %w", err)
 	}
+	if !resizeFilesystem {
+		return nil
+	}
 	// e2fsck fixes unclean state before resize. Non-zero exit on corrected errors is safe to ignore.
-	exec.Command("e2fsck", "-f", "-y", destination).Run()
-	if err := exec.Command("resize2fs", "-f", destination).Run(); err != nil {
+	exec.Command("e2fsck", "-f", "-y", path).Run()
+	if err := exec.Command("resize2fs", "-f", path).Run(); err != nil {
 		return fmt.Errorf("resize2fs: %w", err)
 	}
 	return nil

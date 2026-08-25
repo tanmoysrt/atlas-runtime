@@ -88,8 +88,7 @@ func SaveConfig(path string, config *Config) error {
 	}
 	defer os.Remove(tempFile.Name())
 
-	// os.CreateTemp makes a 0600 file. Keep the mode of the file being
-	// replaced, or one API write makes config.toml unreadable to the operator.
+	// os.CreateTemp makes a 0600 file, so restore the mode being replaced.
 	mode := os.FileMode(0o644)
 	if info, err := os.Stat(path); err == nil {
 		mode = info.Mode().Perm()

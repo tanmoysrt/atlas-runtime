@@ -29,6 +29,7 @@
 body {
   height: 100vh;
   display: flex;
+  overflow: hidden;
   font: 13px/1.5 var(--sans);
   background: var(--gray-1);
   color: var(--ink);
@@ -48,7 +49,11 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   aside { width: 100%; max-height: 50vh; border-right: 0; border-bottom: 1px solid var(--line); }
 }
 
-/* One fixed height keeps the two pane headers aligned, whatever they hold. */
+/* One fixed height keeps the two pane headers aligned. */
+header {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--white);
+}
 header, #bar {
   flex: none;
   display: flex; align-items: center; gap: 10px;
@@ -107,16 +112,18 @@ input {
 input:focus { outline: 1px solid var(--faint); outline-offset: -1px; }
 input::placeholder { color: var(--faint); font-family: var(--sans); }
 
-ul { list-style: none; display: grid; gap: 4px; margin-top: 12px; }
+/* minmax and min-width let a long key shrink instead of widening the sidebar. */
+ul { list-style: none; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; margin-top: 12px; }
 li {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  min-width: 0;
   padding: 6px 8px;
   background: var(--gray-2);
   border-radius: 6px;
   font: 11px var(--mono);
   color: var(--muted);
 }
-li code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+li code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { background: none; color: var(--faint); }
 
 #screen {
@@ -155,11 +162,13 @@ li code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       <dt>Address</dt><dd id="address">—</dd>
       <dt>CPUs</dt><dd id="cpus">—</dd>
       <dt>Memory</dt><dd id="memory">—</dd>
+      <dt>Disk</dt><dd id="disk">—</dd>
+      <dt>Disk I/O</dt><dd id="disk-io">—</dd>
     </dl>
   </section>
 
   <section>
-    <h2>Power</h2>
+    <h2>Actions</h2>
     <div class="row">
       <button onclick="call('start', 'POST', '/start')">Start</button>
       <button onclick="call('stop', 'POST', '/stop')">Stop</button>
@@ -179,6 +188,16 @@ li code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       <input id="in-ingress" type="number" placeholder="Ingress (bps)">
       <input id="in-egress" type="number" placeholder="Egress (bps)">
       <button onclick="bandwidth()">Limit</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Disk</h2>
+    <div class="row">
+      <input id="in-size" type="number" min="1" placeholder="Size MB" title="Size in MB, grows only">
+      <input id="in-bandwidth" type="number" placeholder="B/s" title="Bandwidth in bytes per second, 0 for no limit">
+      <input id="in-iops" type="number" placeholder="IOPS" title="Operations per second, 0 for no limit">
+      <button onclick="rootfs()">Apply</button>
     </div>
   </section>
 
@@ -276,6 +295,10 @@ async function refresh() {
   el('address').textContent = info.config.network.address || '—';
   el('cpus').textContent = info.config.resources.cpus;
   el('memory').textContent = megabytes(info.config.resources.memory);
+  const rootfs = info.config.rootfs;
+  el('disk').textContent = megabytes(rootfs.size);
+  el('disk-io').textContent = [rootfs.bandwidth && rootfs.bandwidth + ' B/s',
+    rootfs.iops && rootfs.iops + ' iops'].filter(Boolean).join(' · ') || 'unlimited';
   showKeys(info.config.ssh.authorized_keys || []);
 }
 
@@ -302,6 +325,14 @@ function resize() {
   const cpus = number('in-cpus'), memory = number('in-memory');
   if (!cpus || !memory) return toast('resize: need CPUs and memory');
   call('resize', 'POST', '/resize', {cpus, memory: memory * (1 << 20)});
+}
+
+function rootfs() {
+  call('rootfs', 'POST', '/rootfs', {
+    size: number('in-size') * (1 << 20),
+    bandwidth: number('in-bandwidth'),
+    iops: number('in-iops'),
+  });
 }
 
 function bandwidth() {

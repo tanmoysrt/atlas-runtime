@@ -90,9 +90,10 @@ func (instance *Runtime) Reload() error {
 func (instance *Runtime) applyConfig(config *Config) error {
 	instance.config = config
 
-	// Update MMDS (SSH keys, cloud-init) only while the VM is running.
+	// Update MMDS (SSH keys, cloud-init) and disk limits only while the VM runs.
 	if instance.firecracker.Running() {
 		_ = instance.firecracker.UpdateMMDS(instance.mmdsData())
+		_ = instance.firecracker.SetRootfsLimits(config.Rootfs, instance.rootfsPath)
 	}
 
 	if err := instance.applyPublicIPs(); err != nil {
@@ -221,6 +222,41 @@ func (instance *Runtime) Reboot() error {
 	_ = instance.firecracker.Stop()
 	_ = instance.console.Detach()
 	return instance.Start()
+}
+
+// ResizeRootfs grows the root disk and sets its I/O limits in config.toml.
+// Only growth is possible, so a smaller or absent size keeps the current one.
+// A bandwidth or IOPS of 0 or less means no limit.
+func (instance *Runtime) ResizeRootfs(sizeBytes, bandwidth int64, iops int) error {
+	config, err := LoadConfig(instance.configPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	if sizeBytes > config.Rootfs.Size {
+		// A running guest has the filesystem mounted and grows it itself,
+		// through the udev rule that watches for the capacity change.
+		running := instance.firecracker.Running()
+		if err := GrowRootfs(instance.rootfsPath, sizeBytes, !running); err != nil {
+			return err
+		}
+		if running {
+			if err := instance.firecracker.SetRootfsSize(instance.rootfsPath); err != nil {
+				return err
+			}
+		}
+		if err := SetupProjectQuota(instance.machineDir, instance.meta.InstanceID, sizeBytes); err != nil {
+			return err
+		}
+		config.Rootfs.Size = sizeBytes
+	}
+	config.Rootfs.Bandwidth = bandwidth
+	config.Rootfs.IOPS = iops
+
+	if err := SaveConfig(instance.configPath, config); err != nil {
+		return err
+	}
+	return instance.applyConfig(config)
 }
 
 // Resize updates the VM's CPU and memory allocation in config.toml.

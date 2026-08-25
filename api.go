@@ -53,6 +53,7 @@ func (api *API) Serve(ctx context.Context, address string) error {
 	serveMux.HandleFunc("POST /reboot", api.wrap(api.runtime.Reboot))
 	serveMux.HandleFunc("POST /reload", api.wrap(api.runtime.Reload))
 	serveMux.HandleFunc("POST /resize", api.handleResize)
+	serveMux.HandleFunc("POST /rootfs", api.handleRootfs)
 	serveMux.HandleFunc("POST /sysrq", api.handleSysRq)
 
 	// Console endpoints.
@@ -122,6 +123,20 @@ func (api *API) handleResize(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if err := api.runtime.Resize(body.CPUs, body.Memory); err != nil {
+		http.Error(writer, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (api *API) handleRootfs(writer http.ResponseWriter, request *http.Request) {
+	var body struct {
+		Size      int64 `json:"size"`
+		Bandwidth int64 `json:"bandwidth"`
+		IOPS      int   `json:"iops"`
+	}
+	if !api.decode(writer, request, &body) {
+		return
+	}
+	if err := api.runtime.ResizeRootfs(body.Size, body.Bandwidth, body.IOPS); err != nil {
 		http.Error(writer, err.Error(), http.StatusInternalServerError)
 	}
 }

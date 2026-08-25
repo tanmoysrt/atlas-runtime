@@ -155,6 +155,28 @@ func drivePayload(rootfs RootfsConfig, rootfsPath string) map[string]any {
 	return payload
 }
 
+// SetRootfsLimits updates the rootfs limiter on a running VM. Firecracker keeps
+// the current limiter when a PATCH carries none, so clearing one needs a restart.
+func (vm *Firecracker) SetRootfsLimits(rootfs RootfsConfig, rootfsPath string) error {
+	payload := drivePayload(rootfs, rootfsPath)
+	if payload["rate_limiter"] == nil {
+		return nil
+	}
+	// A PATCH takes drive_id, path_on_host and rate_limiter only.
+	delete(payload, "is_root_device")
+	delete(payload, "is_read_only")
+	return vm.request("PATCH", "/drives/rootfs", payload)
+}
+
+// SetRootfsSize makes Firecracker re-read the file length and notify the guest.
+// Growing the file on the host alone never reaches the guest.
+func (vm *Firecracker) SetRootfsSize(rootfsPath string) error {
+	return vm.request("PATCH", "/drives/rootfs", map[string]any{
+		"drive_id":     "rootfs",
+		"path_on_host": rootfsPath,
+	})
+}
+
 // Start configures and boots a fresh VM.
 func (vm *Firecracker) Start(config *Config, rootfsPath, tapDevice, instanceID, netnsName string) error {
 	if err := vm.startProcess(instanceID, netnsName); err != nil {

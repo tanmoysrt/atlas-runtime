@@ -94,10 +94,8 @@ curl -fsSL -H "X-metadata-token:$TOKEN" http://169.254.169.254/ssh/authorized_ke
 EOF
 chmod +x "$MNT/usr/local/bin/atlas-mmds-ssh-keys"
 
-# User-data helper: runs the [cloud_init] user_data script from config.toml.
-# Only the script form of cloud-init user-data is supported (a body that
-# starts with "#!"). This image has no cloud-init package, so #cloud-config
-# YAML is ignored. The script runs on every boot, so keep it idempotent.
+# Runs [cloud_init] user_data from config.toml, on every boot, if it is a
+# script. There is no cloud-init package here, so #cloud-config is ignored.
 cat > "$MNT/usr/local/bin/atlas-user-data" <<'EOF'
 #!/bin/bash
 TOKEN=$(curl -fsSL -X PUT -H "X-metadata-token-ttl-seconds: 60" http://169.254.169.254/latest/api/token 2>/dev/null)
@@ -129,6 +127,20 @@ cat > "$MNT/etc/ssh/sshd_config.d/atlas.conf" <<'EOF'
 AuthorizedKeysCommand /usr/local/bin/atlas-mmds-ssh-keys
 AuthorizedKeysCommandUser root
 PasswordAuthentication no
+EOF
+
+# Online disk growth: a virtio-blk capacity change arrives as a block "change"
+# event, and resize2fs extends the mounted root filesystem.
+cat > "$MNT/etc/udev/rules.d/90-atlas-growfs.rules" <<'EOF'
+ACTION=="change", SUBSYSTEM=="block", KERNEL=="vda", ENV{SYSTEMD_WANTS}+="atlas-growfs.service"
+EOF
+
+cat > "$MNT/etc/systemd/system/atlas-growfs.service" <<'EOF'
+[Unit]
+Description=Grow the root filesystem to the disk size
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/resize2fs /dev/vda
 EOF
 
 # Serial getty on ttyS0 for console access. udev provides the device unit.
