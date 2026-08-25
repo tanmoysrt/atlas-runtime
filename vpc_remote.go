@@ -33,6 +33,10 @@ func (network *Network) runVPCWatch(ctx context.Context) {
 	}
 	healthy := true
 
+	// Rebuild routes from the local cache first, so cross-node traffic works
+	// even while beacon is unreachable.
+	network.applyCachedMembers()
+
 	for ctx.Err() == nil {
 		// Publish on every attempt. If beacon was down when this VM started,
 		// this is what makes the node visible to its peers again.
@@ -40,7 +44,7 @@ func (network *Network) runVPCWatch(ctx context.Context) {
 		if err == nil {
 			healthy = true
 			err = network.beacon.watchOnce(ctx, labels, func(obj BeaconObject) {
-				routeRemoteVM(network.config.VPC, network.nodeConfig, obj)
+				network.routeRemoteVM(obj)
 			})
 		}
 		if err != nil && healthy && ctx.Err() == nil {
@@ -72,14 +76,14 @@ func (network *Network) publishMembership() error {
 		})
 }
 
-// routeRemoteVM adds or removes the route to one remote VM. Several watchers
-// share the namespace, so it takes the same lock as the setup path.
-func routeRemoteVM(vpcID int, nodeConfig *NodeConfig, obj BeaconObject) {
+// routeRemoteVM adds or removes the route to one remote VM, and keeps the
+// local cache in step so the route survives a reboot with beacon down.
+func (network *Network) routeRemoteVM(obj BeaconObject) {
 	address := obj.Labels["ip"]
 	if address == "" {
 		return
 	}
-	if obj.Labels["node"] == strconv.Itoa(nodeConfig.NodeID) {
+	if obj.Labels["node"] == strconv.Itoa(network.nodeConfig.NodeID) {
 		return
 	}
 
@@ -88,25 +92,71 @@ func routeRemoteVM(vpcID int, nodeConfig *NodeConfig, obj BeaconObject) {
 	}
 	json.Unmarshal([]byte(obj.Value), &owner)
 
+	if obj.Deleted {
+		network.forgetMember(address)
+		network.routeMember(address, "")
+		return
+	}
+	if owner.GreAddress == "" {
+		return
+	}
+	network.rememberMember(address, owner.GreAddress)
+	network.routeMember(address, owner.GreAddress)
+}
+
+// routeMember programs or removes the route to one remote VM. Several watchers
+// share the namespace, so it takes the same lock as the setup path. An empty
+// greAddress removes the route.
+func (network *Network) routeMember(address, greAddress string) {
 	lock := newFileLock(networkLockPath)
 	if lock.lock() != nil {
 		return
 	}
 	defer lock.unlock()
 
-	namespace := vpcNamespaceName(vpcID)
-	if obj.Deleted {
-		runIP(namespace, vmCommands(vpcID, address, ""))
+	namespace := vpcNamespaceName(network.config.VPC)
+	if greAddress == "" {
+		runIP(namespace, vmCommands(network.config.VPC, address, ""))
 		return
 	}
-	if owner.GreAddress == "" {
+	allowGREPeer(greAddress)
+	if createVPCTunnel(namespace, network.nodeConfig.Network.GreAddress, network.config.VPC) != nil {
 		return
 	}
-	allowGREPeer(owner.GreAddress)
-	if createVPCTunnel(namespace, nodeConfig.Network.GreAddress, vpcID) != nil {
+	runIP(namespace, vmCommands(network.config.VPC, address, greAddress))
+}
+
+// applyCachedMembers loads the cached members and rebuilds their routes. It
+// runs once at the start of the watch, before beacon is reachable.
+func (network *Network) applyCachedMembers() {
+	members, err := loadVPCMembers(network.membersPath)
+	if err != nil || len(members) == 0 {
 		return
 	}
-	runIP(namespace, vmCommands(vpcID, address, owner.GreAddress))
+	network.members = members
+	for address, member := range members {
+		network.routeMember(address, member.GreAddress)
+	}
+}
+
+// rememberMember records one remote VM, and writes the cache only when the
+// entry actually changes.
+func (network *Network) rememberMember(address, greAddress string) {
+	if network.members[address].GreAddress == greAddress {
+		return
+	}
+	network.members[address] = vpcMember{GreAddress: greAddress}
+	saveVPCMembers(network.membersPath, network.members)
+}
+
+// forgetMember drops one remote VM, and writes the cache only when the entry
+// was present.
+func (network *Network) forgetMember(address string) {
+	if _, present := network.members[address]; !present {
+		return
+	}
+	delete(network.members, address)
+	saveVPCMembers(network.membersPath, network.members)
 }
 
 // vmCommands points the addresses of one remote VM at the tunnel, or removes

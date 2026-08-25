@@ -27,6 +27,7 @@ Each file has one job. There are no packages below the root.
 | `network.go` | The TAP device of one VM, its nftables rules, and its `tc` limits. |
 | `vpc.go` | The VPC namespace, the veth to root, and the shared uplink NAT. |
 | `vpc_remote.go` | The other nodes: the beacon watch, the GRE tunnel, and the routes. |
+| `vpc_members.go` | Caches the VPC members of the other nodes in the machine directory. |
 | `beacon.go` | The client for beacon, over HTTP and over WebSocket. |
 | `nodeconfig.go` | The identity of the host: `node_id`, `gre_address`, `beacon_endpoint`. |
 | `helpers.go` | Small shared parts: the file lock, and the addresses of a guest. |

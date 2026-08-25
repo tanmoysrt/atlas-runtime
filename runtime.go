@@ -49,7 +49,7 @@ func NewRuntime(configPath string, config *Config, nodeConfig *NodeConfig, beaco
 	}
 
 	instance.firecracker = NewFirecracker(instance.runtimeDir)
-	instance.network = NewNetwork(instance.meta.InstanceID, config.Network, config.Firewall, nodeConfig, beacon)
+	instance.network = NewNetwork(instance.meta.InstanceID, config.Network, config.Firewall, nodeConfig, beacon, filepath.Join(machineDir, "vpc-members.json"))
 	instance.console = NewConsole(filepath.Join(machineDir, "console.log"))
 	return instance, nil
 }

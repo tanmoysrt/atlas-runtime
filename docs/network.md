@@ -90,6 +90,8 @@ Each VM opens a WebSocket to beacon and subscribes by label. Beacon therefore se
 
 The routes are for one VM, and not for a subnet. A VM therefore keeps its address when it moves to another node. The key stays the same, the `node` label changes, and the other nodes move the route.
 
+Each VM also caches the members it learns in `vpc-members.json`, in the machine directory. When the host starts again, Atlas rebuilds the routes from this cache before it reaches beacon. A reboot during a beacon outage therefore does not cut off cross-node traffic. The cache changes together with the routes, and beacon reconciles it when it returns.
+
 ### The tunnel
 
 Each VPC has one tunnel `g<vpc-id>` on a node, and that tunnel reaches every other node. The tunnel has no remote address. The neighbour entry of each remote VM says which node to send to.

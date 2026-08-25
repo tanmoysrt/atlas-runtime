@@ -18,19 +18,29 @@ const (
 
 // Network manages the TAP device, routing, NAT, and bandwidth for one VM.
 type Network struct {
-	instanceID string
-	config     NetworkConfig
-	firewall   FirewallConfig
-	TapName    string
-	namespace  string
-	nodeConfig *NodeConfig
-	beacon     *BeaconClient
-	watchStop  context.CancelFunc
-	watchDone  chan struct{}
+	instanceID  string
+	config      NetworkConfig
+	firewall    FirewallConfig
+	TapName     string
+	namespace   string
+	nodeConfig  *NodeConfig
+	beacon      *BeaconClient
+	membersPath string
+	members     map[string]vpcMember
+	watchStop   context.CancelFunc
+	watchDone   chan struct{}
 }
 
-func NewNetwork(instanceID string, config NetworkConfig, firewall FirewallConfig, nodeConfig *NodeConfig, beacon *BeaconClient) *Network {
-	return &Network{instanceID: instanceID, config: config, firewall: firewall, nodeConfig: nodeConfig, beacon: beacon}
+func NewNetwork(instanceID string, config NetworkConfig, firewall FirewallConfig, nodeConfig *NodeConfig, beacon *BeaconClient, membersPath string) *Network {
+	return &Network{
+		instanceID:  instanceID,
+		config:      config,
+		firewall:    firewall,
+		nodeConfig:  nodeConfig,
+		beacon:      beacon,
+		membersPath: membersPath,
+		members:     map[string]vpcMember{},
+	}
 }
 
 func (network *Network) NetnsName() string {
