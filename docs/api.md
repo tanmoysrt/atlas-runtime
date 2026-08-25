@@ -148,26 +148,59 @@ There are no defaults. Without rules, the VM denies all traffic both ways, excep
 
 ## Snapshots
 
+A snapshot is a copy of the rootfs. It holds no memory and no CPU state.
+
 | Method | Path | What it does |
 | --- | --- | --- |
-| `POST` | `/snapshot` | Stops the VM for a moment, saves it, then starts it again. |
+| `POST` | `/snapshot` | Copies the rootfs into a new snapshot. |
+| `GET` | `/snapshots` | Lists the snapshots of this VM. |
+| `DELETE` | `/snapshots/{id}` | Removes one snapshot of this VM. |
 
 ### POST /snapshot
 
+The request has no body. Atlas makes the identifier and returns the record:
+
 ```json
-{ "id": "snap-001" }
+{
+  "id": "snap-k3f9x2mq7b",
+  "instance_id": "vm-001",
+  "created_at": "2026-08-25T18:20:03Z",
+  "size": 2147483648,
+  "live": true
+}
 ```
 
-Atlas writes the snapshot to `/var/lib/atlas/snapshots/<id>/`:
+`live` tells you if the VM kept running. On a filesystem that can do reflink, such as XFS with `reflink=1` or Btrfs, the copy is immediate and `live` is `true`. Without reflink, Atlas stops the VM for the length of the copy, starts it again, and `live` is `false`. `desired_state` does not change.
+
+`size` is the logical size of the rootfs file. The disk space that the snapshot uses is smaller while it shares extents with the rootfs of the VM.
+
+A snapshot is crash-consistent, not application-consistent. It is the same as a power loss: the guest replays its journal when it mounts the filesystem. Stop the VM first, or make the application flush its data first, if you need more.
+
+Atlas writes the snapshot to `/var/lib/atlas/snapshots/<vm-id>/<snapshot-id>/`:
 
 ```text
-state
-memory
 rootfs
 metadata.json
 ```
 
-To start a new VM from this snapshot, set `boot.snapshot = "snap-001"` in the `config.toml` of the new machine directory.
+### GET /snapshots
+
+Returns a JSON array of the records above. The array is empty if this VM has no snapshot.
+
+### DELETE /snapshots/{id}
+
+Removes the directory of the snapshot. The filesystem frees only the extents that no other clone of the rootfs uses, so a VM that started from this snapshot is not affected.
+
+### Start a new VM from a snapshot
+
+Set `boot.snapshot` in the `config.toml` of a new machine directory to `"<vm-id>/<snapshot-id>"`:
+
+```toml
+[boot]
+snapshot = "vm-001/snap-k3f9x2mq7b"
+```
+
+The new VM makes its own clone of the snapshot rootfs, then does a normal cold boot. `rootfs.size` must not be smaller than the rootfs of the snapshot.
 
 ## Dashboard
 

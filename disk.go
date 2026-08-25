@@ -1,17 +1,29 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 )
 
-// PrepareRootfs reflink-clones a source image to the destination, then expands it to the given size.
-// If the filesystem does not support reflink, it falls back to a regular sparse copy.
+// PrepareRootfs clones a source image or snapshot to the destination, then
+// expands it to the given size.
 func PrepareRootfs(source, destination string, size int64) error {
-	if err := reflinkCopy(source, destination); err != nil {
-		return fmt.Errorf("reflink copy: %w", err)
+	info, err := os.Stat(source)
+	if err != nil {
+		return fmt.Errorf("stat source: %w", err)
+	}
+	if info.Size() > size {
+		return fmt.Errorf("rootfs.size %d is smaller than the source %d", size, info.Size())
+	}
+
+	if err := cloneFile(source, destination); err != nil {
+		if err := copyFile(source, destination); err != nil {
+			return fmt.Errorf("copy rootfs: %w", err)
+		}
 	}
 	return GrowRootfs(destination, size, true)
 }
@@ -73,19 +85,65 @@ func RemoveProjectQuota(machineDirectory string, instanceID string) error {
 	return nil
 }
 
-// ReflinkSnapshot creates an instant, copy-on-write snapshot of a rootfs file.
-// It uses XFS reflink; if unavailable, it falls back to a regular sparse copy.
-func ReflinkSnapshot(source, destination string) error {
-	if err := reflinkCopy(source, destination); err != nil {
-		return fmt.Errorf("reflink snapshot: %w", err)
+// ficlone is FICLONE from linux/fs.h, that is _IOW(0x94, 9, int). The value
+// is the same on amd64 and on arm64.
+const ficlone = 0x40049409
+
+// cloneFile makes a copy-on-write clone of source at destination. The clone is
+// immediate, and it uses almost no more disk space. It returns an error if the
+// filesystem cannot do reflink. The destination must not exist.
+func cloneFile(source, destination string) error {
+	sourceFile, err := os.Open(source)
+	if err != nil {
+		return err
 	}
-	return nil
+	defer sourceFile.Close()
+
+	destinationFile, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		return err
+	}
+	defer destinationFile.Close()
+
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, destinationFile.Fd(), ficlone, sourceFile.Fd())
+	if errno != 0 {
+		os.Remove(destination)
+		return errno
+	}
+	return destinationFile.Sync()
 }
 
-// reflinkCopy performs a copy-on-write clone via cp --reflink, falling back
-// to a regular sparse copy if the filesystem does not support reflink.
-func reflinkCopy(source, destination string) error {
-	return exec.Command("cp", "--reflink=auto", "--sparse=always", source, destination).Run()
+// cloneUnsupported reports whether a clone failed because the filesystem
+// cannot do reflink, and not because of a real error such as a full disk.
+func cloneUnsupported(err error) bool {
+	return errors.Is(err, syscall.EOPNOTSUPP) || errors.Is(err, syscall.ENOTTY) ||
+		errors.Is(err, syscall.EXDEV) || errors.Is(err, syscall.EINVAL)
+}
+
+// copyFile copies source to destination, keeps the holes of a sparse file, and
+// makes the result durable. The destination must not exist.
+func copyFile(source, destination string) error {
+	if _, err := os.Stat(destination); err == nil {
+		return fmt.Errorf("destination exists: %s", destination)
+	}
+
+	// cp finds the holes of the source exactly. A rootfs is mostly empty
+	// space, so a copy that writes the zeros costs the full size on disk.
+	if output, err := exec.Command("cp", "--sparse=always", source, destination).CombinedOutput(); err != nil {
+		os.Remove(destination)
+		return fmt.Errorf("cp: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+	return syncFile(destination)
+}
+
+// syncFile makes the contents of a file durable.
+func syncFile(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return file.Sync()
 }
 
 // projectIDFromInstance derives a deterministic numeric project ID from an instance ID string.

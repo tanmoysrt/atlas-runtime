@@ -65,12 +65,14 @@ func (api *API) Serve(ctx context.Context, address string) error {
 	serveMux.HandleFunc("POST /ssh-keys", api.handleSSHKeysPost)
 	serveMux.HandleFunc("DELETE /ssh-keys/{id}", api.handleSSHKeysDelete)
 
-	// Network and snapshot endpoints.
+	// Network, firewall, and snapshot endpoints.
 	serveMux.HandleFunc("PUT /network/bandwidth", api.handleBandwidth)
 	serveMux.HandleFunc("PUT /network/public-ip", api.handlePublicIP)
 	serveMux.HandleFunc("GET /firewall", api.handleFirewallGet)
 	serveMux.HandleFunc("PUT /firewall", api.handleFirewallPut)
-	serveMux.HandleFunc("POST /snapshot", api.handleSnapshot)
+	serveMux.HandleFunc("POST /snapshot", api.handleSnapshotCreate)
+	serveMux.HandleFunc("GET /snapshots", api.handleSnapshotList)
+	serveMux.HandleFunc("DELETE /snapshots/{id}", api.handleSnapshotDelete)
 
 	server := &http.Server{Addr: address, Handler: serveMux}
 	go func() { <-ctx.Done(); server.Shutdown(context.Background()) }()
@@ -285,15 +287,30 @@ func (api *API) handleFirewallPut(writer http.ResponseWriter, request *http.Requ
 	}
 }
 
-func (api *API) handleSnapshot(writer http.ResponseWriter, request *http.Request) {
-	var body struct {
-		ID string `json:"id"`
-	}
-	if !api.decode(writer, request, &body) {
+// handleSnapshotCreate takes a snapshot of the rootfs. It reads no body,
+// because the runtime makes the identifier.
+func (api *API) handleSnapshotCreate(writer http.ResponseWriter, request *http.Request) {
+	snapshot, err := api.runtime.CreateSnapshot()
+	if err != nil {
+		http.Error(writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := api.runtime.Snapshot(body.ID); err != nil {
+	json.NewEncoder(writer).Encode(snapshot)
+}
+
+// handleSnapshotList returns the snapshots of this VM.
+func (api *API) handleSnapshotList(writer http.ResponseWriter, request *http.Request) {
+	snapshots, err := api.runtime.ListSnapshots()
+	if err != nil {
 		http.Error(writer, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(writer).Encode(snapshots)
+}
+
+func (api *API) handleSnapshotDelete(writer http.ResponseWriter, request *http.Request) {
+	if err := api.runtime.DeleteSnapshot(request.PathValue("id")); err != nil {
+		http.Error(writer, err.Error(), http.StatusBadRequest)
 	}
 }
 

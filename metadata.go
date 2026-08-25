@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 )
 
 // Metadata is the persistent state for a single VM.
@@ -41,30 +40,5 @@ func SaveMetadata(path string, metadata *Metadata) error {
 	if err != nil {
 		return err
 	}
-
-	tempFile, err := os.CreateTemp(filepath.Dir(path), "metadata-*.json")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tempFile.Name())
-
-	// os.CreateTemp makes a 0600 file, so restore the mode being replaced.
-	mode := os.FileMode(0o644)
-	if info, err := os.Stat(path); err == nil {
-		mode = info.Mode().Perm()
-	}
-	if err := tempFile.Chmod(mode); err != nil {
-		tempFile.Close()
-		return err
-	}
-	if _, err := tempFile.Write(data); err != nil {
-		return err
-	}
-	if err := tempFile.Sync(); err != nil {
-		return err
-	}
-	if err := tempFile.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tempFile.Name(), path)
+	return writeFileAtomic(path, data)
 }

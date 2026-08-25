@@ -1,10 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"net"
-	"os"
-	"path/filepath"
 
 	"github.com/BurntSushi/toml"
 )
@@ -99,33 +98,11 @@ func LoadConfig(path string) (*Config, error) {
 
 // SaveConfig writes config.toml atomically: temp file -> fsync -> rename.
 func SaveConfig(path string, config *Config) error {
-	tempFile, err := os.CreateTemp(filepath.Dir(path), "config-*.toml")
-	if err != nil {
+	var buffer bytes.Buffer
+	if err := toml.NewEncoder(&buffer).Encode(config); err != nil {
 		return err
 	}
-	defer os.Remove(tempFile.Name())
-
-	// os.CreateTemp makes a 0600 file, so restore the mode being replaced.
-	mode := os.FileMode(0o644)
-	if info, err := os.Stat(path); err == nil {
-		mode = info.Mode().Perm()
-	}
-	if err := tempFile.Chmod(mode); err != nil {
-		tempFile.Close()
-		return err
-	}
-	if err := toml.NewEncoder(tempFile).Encode(config); err != nil {
-		tempFile.Close()
-		return err
-	}
-	if err := tempFile.Sync(); err != nil {
-		tempFile.Close()
-		return err
-	}
-	if err := tempFile.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tempFile.Name(), path)
+	return writeFileAtomic(path, buffer.Bytes())
 }
 
 // Validate checks that all required fields are present and well-formed.

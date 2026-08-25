@@ -224,33 +224,6 @@ func (vm *Firecracker) Start(config *Config, rootfsPath, tapDevice, instanceID, 
 	return nil
 }
 
-// Restore brings a VM back from a snapshot instead of a clean boot.
-func (vm *Firecracker) Restore(config *Config, _, tapDevice, instanceID, snapshotDirectory, netnsName string) error {
-	if err := vm.startProcess(instanceID, netnsName); err != nil {
-		return err
-	}
-
-	if err := vm.request("PUT", "/network-interfaces/eth0", map[string]any{
-		"iface_id":      "eth0",
-		"guest_mac":     guestMAC(config.Network.Address),
-		"host_dev_name": tapDevice,
-	}); err != nil {
-		return fmt.Errorf("network: %w", err)
-	}
-
-	if err := vm.request("PUT", "/snapshot/load", map[string]any{
-		"snapshot_path": filepath.Join(snapshotDirectory, "state"),
-		"mem_file_path": filepath.Join(snapshotDirectory, "memory"),
-	}); err != nil {
-		return fmt.Errorf("load snapshot: %w", err)
-	}
-
-	if err := vm.request("PUT", "/actions", map[string]any{"action_type": "InstanceStart"}); err != nil {
-		return fmt.Errorf("start: %w", err)
-	}
-	return nil
-}
-
 // Stop tries graceful shutdown first, then forces kill.
 func (vm *Firecracker) Stop() error {
 	if !vm.Running() {
@@ -281,23 +254,6 @@ func (vm *Firecracker) SysRq(key string) error {
 	defer inputFile.Close()
 	_, err = inputFile.Write([]byte(key))
 	return err
-}
-
-// Snapshot asks Firecracker to dump state+memory and copies the rootfs.
-// Firecracker pauses and resumes the VM automatically during snapshot creation.
-func (vm *Firecracker) Snapshot(directory, rootfsPath string) error {
-	if err := vm.request("PUT", "/snapshot/create", map[string]any{
-		"snapshot_path": filepath.Join(directory, "state"),
-		"mem_file_path": filepath.Join(directory, "memory"),
-		"snapshot_type": "Full",
-	}); err != nil {
-		return fmt.Errorf("create: %w", err)
-	}
-
-	if err := ReflinkSnapshot(rootfsPath, filepath.Join(directory, "rootfs")); err != nil {
-		return fmt.Errorf("copy rootfs: %w", err)
-	}
-	return nil
 }
 
 // ConfigureMMDS writes the metadata payload served to the guest.

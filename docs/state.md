@@ -19,6 +19,8 @@ Atlas keeps as little state as possible. `config.toml` is what you set. `metadat
 | --- | --- |
 | `/var/lib/atlas/config.json` | The identity of the host, not of a VM: `node_id`, `gre_address`, and `beacon_endpoint`. Atlas reads it one time at start. The file is optional. Without it, the node runs alone. |
 | `/run/atlas-vpc-<id>/` | Temporary VPC state: one marker file for each VM that runs, and the lock for the namespace. The last VM removes the directory. |
+| `/var/lib/atlas/snapshots/<vm-id>/<snapshot-id>/` | One snapshot: a `rootfs` copy and a `metadata.json` record. Atlas makes the identifier. See [api.md](api.md) for the endpoints. |
+| `/var/lib/atlas/images/` | The cache of images that Atlas downloaded from `http` or `https`. |
 
 ## What metadata.json answers
 
@@ -46,6 +48,8 @@ metadata.initialized = false
 ```
 
 After `initialized` becomes `true`, a change to `image`, `snapshot`, `kernel`, `rootfs.size`, or `hostname` has no result. To use a new value, make a new machine directory.
+
+`boot.snapshot` names a snapshot as `"<vm-id>/<snapshot-id>"`, for example `"vm-001/snap-k3f9x2mq7b"`. Atlas clones the rootfs of that snapshot, then the VM does a normal cold boot. A snapshot holds no memory, so the VM starts from power-on and not from the moment of the snapshot.
 
 Atlas keeps the hostname at the first start. It uses `boot.hostname`, or the machine ID if `boot.hostname` is empty. No endpoint can change the hostname later.
 

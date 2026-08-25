@@ -246,11 +246,15 @@ li code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: 
   </section>
 
   <section>
-    <h2>Maintenance</h2>
+    <h2>Snapshots</h2>
     <div class="row">
-      <input id="in-snapshot" placeholder="Snapshot name">
-      <button onclick="snapshot()">Snapshot</button>
+      <button onclick="snapshot()">Take snapshot</button>
     </div>
+    <ul id="snapshots"></ul>
+  </section>
+
+  <section>
+    <h2>Maintenance</h2>
     <div class="row">
       <input id="in-sysrq" maxlength="1" placeholder="SysRq key (b, c, s, …)">
       <button onclick="sysrq()">Send</button>
@@ -332,6 +336,7 @@ async function refresh() {
     egress: info.config.firewall?.egress || [],
   };
   renderFirewall();
+  showSnapshots();
 }
 
 function showKeys(keys) {
@@ -442,9 +447,42 @@ function addKey() {
   call('add key', 'POST', '/ssh-keys', {key});
 }
 
-function snapshot() {
-  const id = text('in-snapshot');
-  if (id) call('snapshot', 'POST', '/snapshot', {id});
+// snapshot copies the rootfs. The runtime makes the identifier, so the request
+// has no body.
+async function snapshot() {
+  try {
+    const created = JSON.parse(await send('POST', '/snapshot'));
+    toast('snapshot ' + created.id + (created.live ? '' : ' · VM restarted'));
+  } catch (error) {
+    toast('snapshot: ' + error.message);
+  }
+  refresh();
+}
+
+async function showSnapshots() {
+  let snapshots;
+  try {
+    snapshots = JSON.parse(await send('GET', '/snapshots'));
+  } catch (error) {
+    return;
+  }
+  if (!snapshots.length) {
+    el('snapshots').innerHTML = '<li class="empty">No snapshots</li>';
+    return;
+  }
+  el('snapshots').replaceChildren(...snapshots.map(snapshot => {
+    const item = document.createElement('li');
+    const label = document.createElement('code');
+    label.textContent = snapshot.id + ' · ' + megabytes(snapshot.size) +
+      (snapshot.live ? '' : ' · offline');
+    label.title = snapshot.created_at;
+    const remove = document.createElement('button');
+    remove.className = 'link';
+    remove.textContent = 'remove';
+    remove.onclick = () => call('remove snapshot', 'DELETE', '/snapshots/' + snapshot.id);
+    item.append(label, remove);
+    return item;
+  }));
 }
 
 function sysrq() {

@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 )
@@ -73,4 +74,47 @@ func (lock *fileLock) unlock() {
 		syscall.Flock(int(lock.file.Fd()), syscall.LOCK_UN)
 		lock.file.Close()
 	}
+}
+
+// writeFileAtomic writes data through a temporary file, then renames it over
+// path. It keeps the mode of the file that it replaces.
+func writeFileAtomic(path string, data []byte) error {
+	tempFile, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+"-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tempFile.Name())
+
+	// os.CreateTemp makes a 0600 file, so restore the mode being replaced.
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
+	if err := tempFile.Chmod(mode); err != nil {
+		tempFile.Close()
+		return err
+	}
+	if _, err := tempFile.Write(data); err != nil {
+		tempFile.Close()
+		return err
+	}
+	if err := tempFile.Sync(); err != nil {
+		tempFile.Close()
+		return err
+	}
+	if err := tempFile.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempFile.Name(), path)
+}
+
+// fsyncDir makes a directory entry durable, so that a new file or a rename
+// stays after a power loss.
+func fsyncDir(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }

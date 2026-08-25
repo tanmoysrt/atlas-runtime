@@ -6,32 +6,40 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Runtime is the orchestrator. It owns config, metadata, firecracker, network, and console.
 type Runtime struct {
-	machineDir  string
-	runtimeDir  string
-	configPath  string
-	metaPath    string
-	rootfsPath  string
-	config      *Config
-	meta        *Metadata
-	firecracker *Firecracker
-	network     *Network
-	console     *Console
+	machineDir    string
+	atlasDir      string // the parent of the machines directory, normally /var/lib/atlas
+	snapshotsDir  string
+	runtimeDir    string
+	configPath    string
+	metaPath      string
+	rootfsPath    string
+	config        *Config
+	meta          *Metadata
+	firecracker   *Firecracker
+	network       *Network
+	console       *Console
+	snapshotMutex sync.Mutex
 }
 
 // NewRuntime creates a runtime for the VM described by the given config file.
 func NewRuntime(configPath string, config *Config, nodeConfig *NodeConfig, beacon *BeaconClient) (*Runtime, error) {
 	machineDir := filepath.Dir(configPath)
+	atlasDir := filepath.Dir(filepath.Dir(machineDir))
 	instance := &Runtime{
-		machineDir: machineDir,
-		runtimeDir: filepath.Join(machineDir, "runtime"),
-		configPath: configPath,
-		metaPath:   filepath.Join(machineDir, "metadata.json"),
-		rootfsPath: filepath.Join(machineDir, "rootfs"),
-		config:     config,
+		machineDir:   machineDir,
+		atlasDir:     atlasDir,
+		snapshotsDir: filepath.Join(atlasDir, "snapshots"),
+		runtimeDir:   filepath.Join(machineDir, "runtime"),
+		configPath:   configPath,
+		metaPath:     filepath.Join(machineDir, "metadata.json"),
+		rootfsPath:   filepath.Join(machineDir, "rootfs"),
+		config:       config,
 	}
 
 	os.MkdirAll(instance.runtimeDir, 0755)
@@ -103,30 +111,29 @@ func (instance *Runtime) initialize() error {
 		return fmt.Errorf("need exactly one boot source")
 	}
 
-	if instance.config.Boot.Snapshot != "" {
-		snapshotDirectory := filepath.Join(instance.machineDir, "..", "..", "snapshots", instance.config.Boot.Snapshot)
-		if err := ReflinkSnapshot(filepath.Join(snapshotDirectory, "rootfs"), instance.rootfsPath); err != nil {
-			return fmt.Errorf("copy snap rootfs: %w", err)
-		}
-		if err := instance.firecracker.Restore(instance.config, instance.rootfsPath, instance.network.TapName, instance.meta.InstanceID, snapshotDirectory, instance.network.NetnsName()); err != nil {
-			return fmt.Errorf("restore: %w", err)
-		}
-	} else {
-		imagePath, err := ResolveImage(instance.config.Boot.Image, filepath.Dir(instance.machineDir))
-		if err != nil {
-			return fmt.Errorf("resolve image: %w", err)
-		}
-		if err := PrepareRootfs(imagePath, instance.rootfsPath, instance.config.Rootfs.Size); err != nil {
-			return fmt.Errorf("prepare rootfs: %w", err)
-		}
-		if err := SetupProjectQuota(instance.machineDir, instance.meta.InstanceID, instance.config.Rootfs.Size); err != nil {
-			return fmt.Errorf("quota: %w", err)
-		}
+	source, err := instance.rootfsSource()
+	if err != nil {
+		return err
+	}
+	if err := PrepareRootfs(source, instance.rootfsPath, instance.config.Rootfs.Size); err != nil {
+		return fmt.Errorf("prepare rootfs: %w", err)
+	}
+	if err := SetupProjectQuota(instance.machineDir, instance.meta.InstanceID, instance.config.Rootfs.Size); err != nil {
+		return fmt.Errorf("quota: %w", err)
 	}
 
 	instance.meta.Initialized = true
 	instance.meta.PrivateIP = instance.config.Network.Address
 	return SaveMetadata(instance.metaPath, instance.meta)
+}
+
+// rootfsSource returns the file that the new rootfs is a clone of: the rootfs
+// of a snapshot, or a boot image.
+func (instance *Runtime) rootfsSource() (string, error) {
+	if instance.config.Boot.Snapshot != "" {
+		return snapshotRootfsPath(instance.snapshotsDir, instance.config.Boot.Snapshot)
+	}
+	return ResolveImage(instance.config.Boot.Image, instance.atlasDir)
 }
 
 // Stop persists desired_state=stopped, then tears everything down.
@@ -220,17 +227,97 @@ func (instance *Runtime) SysRq(key string) error {
 	return instance.firecracker.SysRq(key)
 }
 
-// Snapshot pauses the VM, saves state+memory+rootfs, and writes snapshot metadata.
-func (instance *Runtime) Snapshot(snapshotID string) error {
-	snapshotDirectory := filepath.Join(instance.machineDir, "..", "..", "snapshots", snapshotID)
-	os.MkdirAll(snapshotDirectory, 0755)
-	if err := instance.firecracker.Snapshot(snapshotDirectory, instance.rootfsPath); err != nil {
+// CreateSnapshot copies the rootfs into a new snapshot directory, and returns
+// its record. On a filesystem that can do reflink, the copy is immediate and
+// the VM keeps running. Without reflink, Firecracker stops for the length of
+// the copy, then starts again.
+func (instance *Runtime) CreateSnapshot() (*Snapshot, error) {
+	instance.snapshotMutex.Lock()
+	defer instance.snapshotMutex.Unlock()
+
+	directory := filepath.Join(instance.snapshotsDir, instance.meta.InstanceID)
+	id := newSnapshotID()
+	temporary := filepath.Join(directory, ".tmp-"+id)
+	if err := os.MkdirAll(temporary, 0755); err != nil {
+		return nil, fmt.Errorf("make snapshot directory: %w", err)
+	}
+	defer os.RemoveAll(temporary)
+
+	rootfs := filepath.Join(temporary, "rootfs")
+	live, err := instance.copyRootfs(rootfs)
+	if err != nil {
+		return nil, err
+	}
+
+	info, err := os.Stat(rootfs)
+	if err != nil {
+		return nil, err
+	}
+	snapshot := &Snapshot{
+		ID:         id,
+		InstanceID: instance.meta.InstanceID,
+		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+		Size:       info.Size(),
+		Live:       live,
+	}
+
+	return snapshot, publishSnapshot(temporary, filepath.Join(directory, id), snapshot)
+}
+
+// publishSnapshot makes the record durable, then moves the temporary directory
+// to its final name in one step. An interrupted operation therefore never
+// leaves a directory that looks complete.
+func publishSnapshot(temporary, final string, snapshot *Snapshot) error {
+	if err := saveSnapshot(temporary, snapshot); err != nil {
 		return err
 	}
-	metadata := *instance.meta
-	metadata.Initialized = true
-	metadata.DesiredState = "stopped"
-	return SaveMetadata(filepath.Join(snapshotDirectory, "metadata.json"), &metadata)
+	if err := fsyncDir(temporary); err != nil {
+		return err
+	}
+	if err := os.Rename(temporary, final); err != nil {
+		return err
+	}
+	return fsyncDir(filepath.Dir(final))
+}
+
+// copyRootfs clones the rootfs to destination. live is true when the VM did
+// not stop for the copy.
+func (instance *Runtime) copyRootfs(destination string) (live bool, err error) {
+	err = cloneFile(instance.rootfsPath, destination)
+	if err == nil {
+		return true, nil
+	}
+	if !cloneUnsupported(err) {
+		return false, fmt.Errorf("clone rootfs: %w", err)
+	}
+	return false, instance.copyRootfsOffline(destination)
+}
+
+// copyRootfsOffline stops Firecracker, copies the rootfs, then starts the VM
+// again if it was running. It does not change desired_state, so the VM is
+// still wanted if the runtime stops during the copy.
+func (instance *Runtime) copyRootfsOffline(destination string) error {
+	if !instance.firecracker.Running() {
+		return copyFile(instance.rootfsPath, destination)
+	}
+
+	_ = instance.firecracker.Stop()
+	_ = instance.console.Detach()
+	if err := copyFile(instance.rootfsPath, destination); err != nil {
+		_ = instance.Start()
+		return fmt.Errorf("copy rootfs: %w", err)
+	}
+	return instance.Start()
+}
+
+// ListSnapshots returns the snapshots of this VM.
+func (instance *Runtime) ListSnapshots() ([]Snapshot, error) {
+	return ListSnapshots(filepath.Join(instance.snapshotsDir, instance.meta.InstanceID))
+}
+
+// DeleteSnapshot removes one snapshot of this VM.
+func (instance *Runtime) DeleteSnapshot(id string) error {
+	return DeleteSnapshot(filepath.Join(instance.snapshotsDir, instance.meta.InstanceID), id)
 }
 
 func (instance *Runtime) applyConfig(config *Config) error {
