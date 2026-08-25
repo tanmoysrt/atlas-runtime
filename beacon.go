@@ -81,8 +81,9 @@ func (b *BeaconClient) List(prefix string, labels map[string]string) ([]BeaconOb
 
 // watchOnce opens one WebSocket to /events, subscribes to matching labels,
 // and calls handler for every object message until the context is cancelled
-// or the connection breaks.
-func (b *BeaconClient) watchOnce(ctx context.Context, labels map[string]string, handler func(BeaconObject)) error {
+// or the connection breaks. since is the revision to resume from, so only the
+// objects that changed after it are sent as catch-up.
+func (b *BeaconClient) watchOnce(ctx context.Context, labels map[string]string, since int64, handler func(BeaconObject)) error {
 	u, _ := url.Parse(b.endpoint + "/events")
 	u.Scheme = "ws"
 	if strings.HasPrefix(b.endpoint, "https") {
@@ -105,8 +106,8 @@ func (b *BeaconClient) watchOnce(ctx context.Context, labels map[string]string, 
 		}
 	}()
 
-	// Subscribe with since=0 to receive all current objects as catch-up.
-	if err := conn.WriteJSON(map[string]any{"type": "subscribe", "labels": labels, "since": 0}); err != nil {
+	// Subscribe with since to receive only the changes after the last revision.
+	if err := conn.WriteJSON(map[string]any{"type": "subscribe", "labels": labels, "since": since}); err != nil {
 		return err
 	}
 

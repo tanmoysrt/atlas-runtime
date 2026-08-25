@@ -8,7 +8,7 @@ Atlas keeps as little state as possible. `config.toml` is what you set. `metadat
 | --- | --- |
 | `config.toml` | Your configuration. This file is the authority. |
 | `metadata.json` | The state of the machine: `instance_id`, `initialized`, `desired_state`, and `private_ip`. |
-| `vpc-members.json` | The remote VMs of this VPC that Atlas last learned from beacon. Atlas reads it to rebuild cross-node routes when it starts and beacon is still down. |
+| `vpc-members.json` | The remote VMs of this VPC that Atlas last learned from beacon, and the highest beacon timestamp (revision) it has seen. Atlas reads it to rebuild cross-node routes when it starts and beacon is still down, and resumes the watch from that revision. |
 | `rootfs` | The disk of the VM. |
 | `console.log` | The history of the serial console. Atlas only adds to this file. |
 | `runtime/` | Temporary files: the Firecracker socket and the serial FIFOs. You can delete this directory at any time. |

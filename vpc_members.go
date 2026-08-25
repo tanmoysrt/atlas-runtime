@@ -12,25 +12,37 @@ type vpcMember struct {
 	GreAddress string `json:"gre_address"`
 }
 
-// loadVPCMembers reads the cached members. A missing file gives an empty map.
-func loadVPCMembers(path string) (map[string]vpcMember, error) {
+// vpcMembersFile is the on-disk cache: the members plus the highest beacon
+// timestamp (the revision) that they reflect. The revision lets the watcher
+// resume with `since` instead of downloading every member again.
+type vpcMembersFile struct {
+	Revision int64                `json:"revision"`
+	Members  map[string]vpcMember `json:"members"`
+}
+
+// loadVPCMembers reads the cached members. A missing file gives an empty cache
+// with revision zero.
+func loadVPCMembers(path string) (int64, map[string]vpcMember, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return map[string]vpcMember{}, nil
+			return 0, map[string]vpcMember{}, nil
 		}
-		return nil, err
+		return 0, nil, err
 	}
-	var members map[string]vpcMember
-	if err := json.Unmarshal(data, &members); err != nil {
-		return nil, err
+	var file vpcMembersFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		return 0, nil, err
 	}
-	return members, nil
+	if file.Members == nil {
+		file.Members = map[string]vpcMember{}
+	}
+	return file.Revision, file.Members, nil
 }
 
 // saveVPCMembers writes atomically: temp file -> fsync -> rename.
-func saveVPCMembers(path string, members map[string]vpcMember) error {
-	data, err := json.MarshalIndent(members, "", "  ")
+func saveVPCMembers(path string, revision int64, members map[string]vpcMember) error {
+	data, err := json.MarshalIndent(vpcMembersFile{Revision: revision, Members: members}, "", "  ")
 	if err != nil {
 		return err
 	}

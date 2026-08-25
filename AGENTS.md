@@ -61,7 +61,7 @@ Persistent state lives in the machine directory only:
 
 - `config.toml` - user configuration
 - `metadata.json` - persistent Atlas machine state + guest metadata
-- `vpc-members.json` - cached remote VMs of this VPC, to rebuild routes after a reboot with beacon down
+- `vpc-members.json` - cached remote VMs of this VPC plus the last beacon revision, to rebuild routes and resume the watch after a reboot with beacon down
 - `rootfs` - machine disk
 - `console.log` - console history
 - `runtime/` - disposable runtime state (can be destroyed at any time)

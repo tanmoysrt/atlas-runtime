@@ -43,7 +43,7 @@ func (network *Network) runVPCWatch(ctx context.Context) {
 		err := network.publishMembership()
 		if err == nil {
 			healthy = true
-			err = network.beacon.watchOnce(ctx, labels, func(obj BeaconObject) {
+			err = network.beacon.watchOnce(ctx, labels, network.membersRevision, func(obj BeaconObject) {
 				network.routeRemoteVM(obj)
 			})
 		}
@@ -93,14 +93,14 @@ func (network *Network) routeRemoteVM(obj BeaconObject) {
 	json.Unmarshal([]byte(obj.Value), &owner)
 
 	if obj.Deleted {
-		network.forgetMember(address)
+		network.forgetMember(address, obj.Timestamp)
 		network.routeMember(address, "")
 		return
 	}
 	if owner.GreAddress == "" {
 		return
 	}
-	network.rememberMember(address, owner.GreAddress)
+	network.rememberMember(address, owner.GreAddress, obj.Timestamp)
 	network.routeMember(address, owner.GreAddress)
 }
 
@@ -129,11 +129,12 @@ func (network *Network) routeMember(address, greAddress string) {
 // applyCachedMembers loads the cached members and rebuilds their routes. It
 // runs once at the start of the watch, before beacon is reachable.
 func (network *Network) applyCachedMembers() {
-	members, err := loadVPCMembers(network.membersPath)
+	revision, members, err := loadVPCMembers(network.membersPath)
 	if err != nil || len(members) == 0 {
 		return
 	}
 	network.members = members
+	network.membersRevision = revision
 	for address, member := range members {
 		network.routeMember(address, member.GreAddress)
 	}
@@ -141,22 +142,28 @@ func (network *Network) applyCachedMembers() {
 
 // rememberMember records one remote VM, and writes the cache only when the
 // entry actually changes.
-func (network *Network) rememberMember(address, greAddress string) {
+func (network *Network) rememberMember(address, greAddress string, timestamp int64) {
+	if timestamp > network.membersRevision {
+		network.membersRevision = timestamp
+	}
 	if network.members[address].GreAddress == greAddress {
 		return
 	}
 	network.members[address] = vpcMember{GreAddress: greAddress}
-	saveVPCMembers(network.membersPath, network.members)
+	saveVPCMembers(network.membersPath, network.membersRevision, network.members)
 }
 
 // forgetMember drops one remote VM, and writes the cache only when the entry
 // was present.
-func (network *Network) forgetMember(address string) {
+func (network *Network) forgetMember(address string, timestamp int64) {
+	if timestamp > network.membersRevision {
+		network.membersRevision = timestamp
+	}
 	if _, present := network.members[address]; !present {
 		return
 	}
 	delete(network.members, address)
-	saveVPCMembers(network.membersPath, network.members)
+	saveVPCMembers(network.membersPath, network.membersRevision, network.members)
 }
 
 // vmCommands points the addresses of one remote VM at the tunnel, or removes
