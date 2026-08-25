@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/atlas-runtime /var/lib/atlas/machines/%i/config.toml
+ExecStart=/usr/local/bin/atlas-runtime /var/lib/atlas/machines/%i/config.toml
 Restart=always
 RestartSec=2
 KillSignal=SIGTERM

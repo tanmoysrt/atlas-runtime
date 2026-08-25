@@ -63,7 +63,7 @@ fi
 
 if [ ! -f "$IMAGE" ]; then
 	echo "No test image at $IMAGE. Building one (needs root) ..."
-	(cd "$DEV_DIR" && sudo "$REPO_ROOT/scripts/build-image")
+	(cd "$DEV_DIR" && sudo "$REPO_ROOT/scripts/build-ubuntu-image")
 fi
 
 if [ -f "$MACHINE_DIR/config.toml" ]; then

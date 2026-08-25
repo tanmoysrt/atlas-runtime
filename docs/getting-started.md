@@ -7,16 +7,26 @@ This guide installs Atlas-runtime on a Linux host and starts your first VM.
 You need Linux with systemd, and root access.
 
 ```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/tanmoysrt/atlas-runtime/main/scripts/setup.sh)
+git clone git@github.com:tanmoysrt/atlas-runtime.git
+cd atlas-runtime
+sudo ./scripts/setup.sh
 ```
 
 The script does all of this:
 
-1. It installs Go, the network tools, and Firecracker.
-2. It clones the source and builds the binary.
-3. It installs the systemd units.
+1. It installs Go, Firecracker, and the network tools.
+2. It builds `atlas-runtime` and puts it in `/usr/local/bin`.
+3. It downloads a guest kernel to `/var/lib/atlas/kernels/`.
+4. It installs the systemd units and the generator.
+5. It makes the directories below `/var/lib/atlas/`.
 
-The script clones `https://github.com/tanmoysrt/atlas-runtime`. To use a different repository, give the URL as an argument. If you already have a checkout, run `sudo ./scripts/setup.sh` inside it, and the script does not clone.
+Add `--with-image` to also build a guest image. This needs `debootstrap` and takes some minutes. Without the flag, build the image later:
+
+```bash
+cd /var/lib/atlas && /opt/atlas-runtime/scripts/build-ubuntu-image
+```
+
+The script uses the checkout that you are in. To clone a different repository instead, give its URL as an argument. You can run the script again at any time, because it keeps what is already correct.
 
 ## The machine directory
 
