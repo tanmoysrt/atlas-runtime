@@ -1,116 +1,97 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os/exec"
 	"strings"
 )
 
-// tapHostAddress4/6 are the fixed host-side addresses on every TAP. They
-// live inside each VPC's namespace, so all TAPs can share them.
+// Fixed host-side addresses on every TAP. They live inside each VPC's
+// namespace, so all TAPs can share them.
 const (
 	tapHostAddress4 = "169.254.1.1"
 	tapHostAddress6 = "fd00::1"
 )
 
 // Network manages the TAP device, routing, NAT, and bandwidth for one VM.
-// It runs inside the VM's VPC network namespace (see vpc.go).
 type Network struct {
 	instanceID string
 	config     NetworkConfig
 	TapName    string
-	netns      string
+	namespace  string
+	nodeConfig *NodeConfig
+	beacon     *BeaconClient
+	watchStop  context.CancelFunc
+	watchDone  chan struct{}
 }
 
-// NewNetwork creates a network manager for the given VM instance.
-func NewNetwork(instanceID string, config NetworkConfig) *Network {
-	return &Network{instanceID: instanceID, config: config}
+func NewNetwork(instanceID string, config NetworkConfig, nodeConfig *NodeConfig, beacon *BeaconClient) *Network {
+	return &Network{instanceID: instanceID, config: config, nodeConfig: nodeConfig, beacon: beacon}
 }
 
-// NetnsName returns the VPC namespace this VM's TAP lives in.
 func (network *Network) NetnsName() string {
-	return network.netns
+	return network.namespace
 }
 
 // Create sets up the VM's network inside its VPC's namespace.
 func (network *Network) Create() error {
-	netns, err := ensureVPCNetwork(network.config.VPC)
+	namespace, err := vpcEnter(network.config.VPC, network.instanceID)
 	if err != nil {
 		return fmt.Errorf("vpc network: %w", err)
 	}
-	network.netns = netns
+	network.namespace = namespace
 
+	if network.nodeConfig != nil && network.beacon != nil {
+		network.watchVPCMembers()
+	}
+
+	// Create the TAP, assign host-side addresses, and route the guest to it.
 	network.TapName = "atap-" + network.instanceID
-	network.ip("tuntap", "add", network.TapName, "mode", "tap").Run()
-	network.ip("addr", "add", tapHostAddress4+"/32", "dev", network.TapName).Run()
-	network.ip("-6", "addr", "add", tapHostAddress6+"/128", "dev", network.TapName).Run()
-	network.ip("link", "set", network.TapName, "up").Run()
-	// A route with no gateway needs its device up first.
-	network.ip("route", "add", network.guestAddress()+"/32", "dev", network.TapName).Run()
-	network.ip("-6", "route", "add", network.guestAddress6IP()+"/128", "dev", network.TapName).Run()
+	tap := network.TapName
+	runIP(network.namespace, []string{
+		"tuntap add " + tap + " mode tap",
+		"addr add " + tapHostAddress4 + "/32 dev " + tap,
+		"addr add " + tapHostAddress6 + "/128 dev " + tap,
+		"link set " + tap + " up",
+		"route add " + network.guestAddress() + " dev " + tap,
+		"route add " + network.guestAddress6IP() + " dev " + tap,
+	})
 
 	network.setupNftables()
 	return network.SetBandwidth(network.config.IngressBandwidth, network.config.EgressBandwidth)
 }
 
-// Delete tears down everything Create set up for this VM. It never touches
-// the VPC's namespace/veth itself: other VMs of the same VPC may still be using it.
+// Delete tears down the VM's network.
 func (network *Network) Delete() error {
 	network.exec("tc", "qdisc", "del", "dev", network.TapName, "root").Run()
+	network.exec("tc", "qdisc", "del", "dev", network.TapName, "ingress").Run()
 	network.ip("link", "set", network.TapName, "down").Run()
 	network.ip("tuntap", "del", network.TapName, "mode", "tap").Run()
 	network.deleteNftables()
-	return nil
-}
 
-// SyncPublicIPv4 moves the 1:1 NAT mapping for this VM's private address
-// from oldIP to newIP. An empty newIP clears the mapping.
-func (network *Network) SyncPublicIPv4(oldIP, newIP string) error {
-	network.syncPublicIP(oldIP, newIP, network.guestAddress(), "dnat_map", "snat_map")
-	_, nsAddr := vpcVethAddress4(network.config.VPC)
-	via, _, _ := net.ParseCIDR(nsAddr)
-	network.syncPublicRoute(oldIP, newIP, "32", nil, via.String())
-	return nil
-}
-
-// SyncPublicIPv6 is the IPv6 equivalent of SyncPublicIPv4.
-func (network *Network) SyncPublicIPv6(oldIP, newIP string) error {
-	network.syncPublicIP(oldIP, newIP, network.guestAddress6IP(), "dnat6_map", "snat6_map")
-	_, nsAddr := vpcVethAddress6(network.config.VPC)
-	via, _, _ := net.ParseCIDR(nsAddr)
-	network.syncPublicRoute(oldIP, newIP, "128", []string{"-6"}, via.String())
-	return nil
-}
-
-// syncPublicIP adds or removes the DNAT/SNAT elements for this VM's VPC.
-func (network *Network) syncPublicIP(oldIP, newIP, guestIP, dnatMap, snatMap string) {
-	if oldIP != "" && oldIP != newIP {
-		network.exec("nft", "delete", "element", "inet", network.table(), dnatMap, "{"+oldIP+"}").Run()
-		network.exec("nft", "delete", "element", "inet", network.table(), snatMap, "{"+guestIP+"}").Run()
+	if network.watchStop != nil {
+		network.watchStop()
+		<-network.watchDone
+		network.watchStop = nil
+		network.watchDone = nil
 	}
-	if newIP != "" {
-		network.exec("nft", "add", "element", "inet", network.table(), dnatMap, "{"+newIP+" : "+guestIP+"}").Run()
-		network.exec("nft", "add", "element", "inet", network.table(), snatMap, "{"+guestIP+" : "+newIP+"}").Run()
+
+	// Withdraw this VM's address after the watcher stops, so that it cannot
+	// publish the address again.
+	if network.beacon != nil && network.nodeConfig != nil {
+		_ = network.beacon.Delete(vpcMemberKey(network.config.VPC, network.instanceID))
 	}
+	return vpcLeave(network.config.VPC, network.instanceID)
 }
 
-// syncPublicRoute keeps the root-level route to a public IP in sync with
-// the mapping. It points via the VPC's ns-side veth address because the
-// public IP is not on any link, so root cannot resolve it directly.
-func (network *Network) syncPublicRoute(oldIP, newIP, mask string, family []string, via string) {
-	rootVeth, _ := vpcVethNames(network.config.VPC)
-	if oldIP != "" && oldIP != newIP {
-		exec.Command("ip", append(append([]string{}, family...), "route", "del", oldIP+"/"+mask, "via", via, "dev", rootVeth)...).Run()
-	}
-	if newIP != "" {
-		exec.Command("ip", append(append([]string{}, family...), "route", "add", newIP+"/"+mask, "via", via, "dev", rootVeth)...).Run()
-	}
-}
-
-// SetBandwidth applies tc TBF rate-limiting on the TAP device.
+// SetBandwidth applies tc rate-limiting on the TAP device.
+// Egress uses TBF. Ingress uses an ingress qdisc with a police filter.
 func (network *Network) SetBandwidth(ingressBandwidth, egressBandwidth int64) error {
 	network.exec("tc", "qdisc", "del", "dev", network.TapName, "root").Run()
+	network.exec("tc", "qdisc", "del", "dev", network.TapName, "ingress").Run()
+
 	if egressBandwidth > 0 {
 		if err := network.exec("tc", "qdisc", "add", "dev", network.TapName, "root", "tbf",
 			"rate", fmt.Sprintf("%dbps", egressBandwidth),
@@ -120,13 +101,47 @@ func (network *Network) SetBandwidth(ingressBandwidth, egressBandwidth int64) er
 			return fmt.Errorf("tc egress: %w", err)
 		}
 	}
+
+	if ingressBandwidth > 0 {
+		if err := network.exec("tc", "qdisc", "add", "dev", network.TapName, "ingress").Run(); err != nil {
+			return fmt.Errorf("tc ingress qdisc: %w", err)
+		}
+		if err := network.exec("tc", "filter", "add", "dev", network.TapName, "parent", "ffff:", "protocol", "ip",
+			"u32", "match", "u32", "0", "0",
+			"police", "rate", fmt.Sprintf("%dbps", ingressBandwidth),
+			"burst", "32kbit",
+			"drop",
+		).Run(); err != nil {
+			return fmt.Errorf("tc ingress filter: %w", err)
+		}
+	}
+	return nil
+}
+
+// NAT and public IP routing
+
+// SyncPublicIPv4 moves the 1:1 NAT mapping from oldIP to newIP.
+// An empty newIP clears the mapping.
+func (network *Network) SyncPublicIPv4(oldIP, newIP string) error {
+	network.syncNATMap(oldIP, newIP, network.guestAddress(), "dnat_map", "snat_map")
+	network.syncPublicRoute(oldIP, newIP, "-4", "/32")
+	return nil
+}
+
+// SyncPublicIPv6 is the IPv6 equivalent of SyncPublicIPv4.
+func (network *Network) SyncPublicIPv6(oldIP, newIP string) error {
+	network.syncNATMap(oldIP, newIP, network.guestAddress6IP(), "dnat6_map", "snat6_map")
+	network.syncPublicRoute(oldIP, newIP, "-6", "/128")
 	return nil
 }
 
 // setupNftables builds this VM's nftables table as one atomic script.
 // "destroy" does not error when the table is missing, so the same script
-// works on first Create and on a later Reboot. Egress=="host" masquerades
-// to the VPC's veth; vpc.go masquerades a second time to the physical NIC.
+// works on first Create and on a later Reboot.
+//
+// The forward chain clamps the TCP MSS to the route MTU. A GRE tunnel to
+// another node holds 1472 bytes, not 1500, and the clamp must come before
+// the accept rules, because an accept ends the chain.
 func (network *Network) setupNftables() {
 	uplink := network.uplink()
 	if uplink == "" {
@@ -152,16 +167,14 @@ add rule inet %[1]s prerouting dnat to ip6 daddr map @dnat6_map
 add rule inet %[1]s postrouting snat to ip saddr map @snat_map
 add rule inet %[1]s postrouting snat to ip6 saddr map @snat6_map
 %[2]s
+add rule inet %[1]s forward tcp flags syn tcp option maxseg size set rt mtu
 add rule inet %[1]s forward iif %[3]q oif %[4]q accept
 add rule inet %[1]s forward iif %[4]q oif %[3]q ct state established,related accept
 `, table, masqueradeRule(network.config.Egress, table, uplink), network.TapName, uplink)
 
-	command := network.exec("nft", "-f", "-")
-	command.Stdin = strings.NewReader(script)
-	command.Run()
+	runScript(network.exec("nft", "-f", "-"), script)
 }
 
-// masqueradeRule returns the egress=host MASQUERADE rule line, or "" if not configured.
 func masqueradeRule(egress, table, uplink string) string {
 	if egress != "host" {
 		return ""
@@ -177,29 +190,50 @@ func (network *Network) table() string {
 	return "atlas-" + network.instanceID
 }
 
+func (network *Network) syncNATMap(oldIP, newIP, guestIP, dnatMap, snatMap string) {
+	if oldIP != "" && oldIP != newIP {
+		network.exec("nft", "delete", "element", "inet", network.table(), dnatMap, "{"+oldIP+"}").Run()
+		network.exec("nft", "delete", "element", "inet", network.table(), snatMap, "{"+guestIP+"}").Run()
+	}
+	if newIP != "" {
+		network.exec("nft", "add", "element", "inet", network.table(), dnatMap, "{"+newIP+" : "+guestIP+"}").Run()
+		network.exec("nft", "add", "element", "inet", network.table(), snatMap, "{"+guestIP+" : "+newIP+"}").Run()
+	}
+}
+
+// syncPublicRoute keeps the root-level route in sync. The route points via
+// the VPC's ns-side veth because the public IP is not on any local link.
+func (network *Network) syncPublicRoute(oldIP, newIP, family, mask string) {
+	_, nsAddr := vpcVethAddress4(network.config.VPC)
+	if family == "-6" {
+		_, nsAddr = vpcVethAddress6(network.config.VPC)
+	}
+	via, _, _ := net.ParseCIDR(nsAddr)
+	rootVeth, _ := vpcVethNames(network.config.VPC)
+
+	if oldIP != "" && oldIP != newIP {
+		exec.Command("ip", family, "route", "del", oldIP+mask, "via", via.String(), "dev", rootVeth).Run()
+	}
+	if newIP != "" {
+		exec.Command("ip", family, "route", "add", newIP+mask, "via", via.String(), "dev", rootVeth).Run()
+	}
+}
+
 func (network *Network) guestAddress() string {
-	ip, _, _ := net.ParseCIDR(network.config.Address)
-	return ip.String()
+	return guestIP(network.config.Address).String()
 }
 
 func (network *Network) guestAddress6IP() string {
-	ip4 := mustIPv4(network.config.Address)
-	return fmt.Sprintf("fd00::%02x%02x:%02x%02x", ip4[0], ip4[1], ip4[2], ip4[3])
+	return guestIPv6(network.config.Address)
 }
 
-func mustIPv4(cidr string) net.IP {
-	ip, _, _ := net.ParseCIDR(cidr)
-	return ip.To4()
-}
-
-// uplink returns the default-route interface inside this VM's VPC
-// namespace: the veth set up by ensureVPCNetwork (see vpc.go).
+// uplink returns the default-route interface inside the VPC namespace.
 func (network *Network) uplink() string {
 	output, _ := network.ip("route", "show", "default").Output()
 	fields := strings.Fields(string(output))
-	for index := 0; index < len(fields)-1; index++ {
-		if fields[index] == "dev" {
-			return fields[index+1]
+	for i := 0; i < len(fields)-1; i++ {
+		if fields[i] == "dev" {
+			return fields[i+1]
 		}
 	}
 	return ""
@@ -207,10 +241,10 @@ func (network *Network) uplink() string {
 
 // ip runs an `ip` subcommand inside this VM's VPC namespace.
 func (network *Network) ip(args ...string) *exec.Cmd {
-	return nsIPCommand(network.netns, args...)
+	return exec.Command("ip", append([]string{"-n", network.namespace}, args...)...)
 }
 
 // exec runs an arbitrary command inside this VM's VPC namespace.
 func (network *Network) exec(binary string, args ...string) *exec.Cmd {
-	return nsExecCommand(network.netns, binary, args...)
+	return exec.Command("ip", append([]string{"netns", "exec", network.namespace, binary}, args...)...)
 }

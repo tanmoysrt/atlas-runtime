@@ -31,3 +31,5 @@ coverage.html
 # AI
 .claude
 .codex
+.agents
+skills-lock.json

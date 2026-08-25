@@ -43,9 +43,7 @@ type BootConfig struct {
 // NetworkConfig defines the single NIC for this VM.
 type NetworkConfig struct {
 	VPC              int      `toml:"vpc" json:"vpc"`
-	CIDR             string   `toml:"cidr" json:"cidr"`
 	Address          string   `toml:"address" json:"address"`
-	MAC              string   `toml:"mac" json:"mac"`
 	Egress           string   `toml:"egress" json:"egress"`
 	IngressBandwidth int64    `toml:"ingress_bandwidth" json:"ingress_bandwidth"`
 	EgressBandwidth  int64    `toml:"egress_bandwidth" json:"egress_bandwidth"`
@@ -139,17 +137,11 @@ func (resources ResourcesConfig) validate() error {
 }
 
 func (network NetworkConfig) validate() error {
-	if network.VPC <= 0 || network.VPC > 32767 {
-		return fmt.Errorf("vpc must be between 1 and 32767")
+	if network.VPC <= 0 || network.VPC > 16384 {
+		return fmt.Errorf("vpc must be between 1 and 16384")
 	}
-	if _, _, err := net.ParseCIDR(network.CIDR); err != nil {
-		return fmt.Errorf("invalid cidr: %w", err)
-	}
-	if _, _, err := net.ParseCIDR(network.Address); err != nil {
-		return fmt.Errorf("invalid address: %w", err)
-	}
-	if _, err := net.ParseMAC(network.MAC); err != nil {
-		return fmt.Errorf("invalid mac: %w", err)
+	if guestIP(network.Address) == nil {
+		return fmt.Errorf("address must be one IPv4 address: %s", network.Address)
 	}
 	return network.validatePublicIPs()
 }

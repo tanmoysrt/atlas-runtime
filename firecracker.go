@@ -197,7 +197,7 @@ func (vm *Firecracker) Start(config *Config, rootfsPath, tapDevice, instanceID, 
 
 	if err := vm.request("PUT", "/network-interfaces/eth0", map[string]any{
 		"iface_id":      "eth0",
-		"guest_mac":     config.Network.MAC,
+		"guest_mac":     guestMAC(config.Network.Address),
 		"host_dev_name": tapDevice,
 	}); err != nil {
 		return fmt.Errorf("network: %w", err)
@@ -232,7 +232,7 @@ func (vm *Firecracker) Restore(config *Config, _, tapDevice, instanceID, snapsho
 
 	if err := vm.request("PUT", "/network-interfaces/eth0", map[string]any{
 		"iface_id":      "eth0",
-		"guest_mac":     config.Network.MAC,
+		"guest_mac":     guestMAC(config.Network.Address),
 		"host_dev_name": tapDevice,
 	}); err != nil {
 		return fmt.Errorf("network: %w", err)

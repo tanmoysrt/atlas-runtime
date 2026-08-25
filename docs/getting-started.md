@@ -1,25 +1,26 @@
 # Getting Started
 
-This guide sets up Atlas-runtime on a Linux host and boots your first VM.
+This guide installs Atlas-runtime on a Linux host and starts your first VM.
 
 ## Install
 
-Requires Linux with systemd and root access.
-
-The setup script installs Go, the network tools, and Firecracker. It then
-clones the source, builds the binary, and installs the systemd units.
+You need Linux with systemd, and root access.
 
 ```bash
 sudo bash <(curl -fsSL https://raw.githubusercontent.com/tanmoysrt/atlas-runtime/main/scripts/setup.sh)
 ```
 
-The script clones `https://github.com/tanmoysrt/atlas-runtime` by default.
-Pass another URL as an argument to use a different repository. Run
-`sudo ./scripts/setup.sh` inside an existing checkout to skip the clone.
+The script does all of this:
 
-## Machine directory
+1. It installs Go, the network tools, and Firecracker.
+2. It clones the source and builds the binary.
+3. It installs the systemd units.
 
-Each VM lives in its own directory under `/var/lib/atlas/machines/`:
+The script clones `https://github.com/tanmoysrt/atlas-runtime`. To use a different repository, give the URL as an argument. If you already have a checkout, run `sudo ./scripts/setup.sh` inside it, and the script does not clone.
+
+## The machine directory
+
+Each VM has its own directory below `/var/lib/atlas/machines/`:
 
 ```text
 /var/lib/atlas/machines/
@@ -31,16 +32,17 @@ Each VM lives in its own directory under `/var/lib/atlas/machines/`:
     └── runtime/
 ```
 
-The runtime reads `config.toml` from this directory. All persistent state
-stays here; `runtime/` is disposable.
+The runtime reads `config.toml` from this directory. All the state that must stay is here. Only `runtime/` is temporary.
 
-## Create a VM
+## Make a VM
 
-Create the machine directory and write a `config.toml`:
+Make the directory:
 
 ```bash
 mkdir -p /var/lib/atlas/machines/vm-001
 ```
+
+Then write `config.toml` in it:
 
 ```toml
 [runtime]
@@ -58,9 +60,7 @@ hostname = "vm-001"
 
 [network]
 vpc = 1
-cidr = "10.0.0.0/24"
-address = "10.0.0.10/24"
-mac = "06:00:ac:10:00:01"
+address = "10.0.0.10"
 egress = "host"
 nameservers = ["1.1.1.1"]
 
@@ -71,39 +71,49 @@ size = 8589934592   # bytes
 authorized_keys = ["ssh-ed25519 AAAA..."]
 ```
 
-`[boot]` is consumed only on the first start. After the VM is initialized,
-changes to `image`, `snapshot`, `kernel`, or `hostname` have no effect. To
-change them, create a new machine directory.
+Two notes on this file:
+
+- Atlas reads `[boot]` only at the first start. After that, a change to `image`, `snapshot`, `kernel`, or `hostname` has no result. To use a new value, make a new machine directory.
+- `network.address` is one address, and it needs no mask. Atlas makes the MAC of the guest from it.
+
+## Run a script in the guest
+
+Add a `[cloud_init]` section to give the guest a script. Atlas sends the text through MMDS, and the guest runs it at each start:
+
+```toml
+[cloud_init]
+user_data = '''
+#!/bin/bash
+echo 'root:toor' | chpasswd
+'''
+```
+
+The text must start with `#!`. If it does not, the guest reads it and does nothing. Use the `'''` quotes of TOML, because they keep a `\n` as two characters for the shell.
 
 ## Start the VM
 
-The systemd generator scans `/var/lib/atlas/machines/*/config.toml` at boot
-and creates one `atlas-vm@<name>.service` per machine. Start this VM:
+At boot, the systemd generator reads each `/var/lib/atlas/machines/*/config.toml`. It makes one `atlas-vm@<name>.service` for each machine. Start this one:
 
 ```bash
 systemctl enable --now atlas-vm@vm-001.service
 ```
 
-systemd restarts `atlas-runtime` if it dies. On startup, the runtime reads
-`metadata.json` and starts every VM whose `desired_state` is `running`.
+The unit starts the runtime, but not the VM. Send `POST /start` to start the VM. Atlas then remembers this, and the VM starts again after a reboot of the host.
 
 ## Use the API
 
-The API listens on `127.0.0.1:9101` (the `[runtime] listen` value):
+The API listens on the `[runtime] listen` address, `127.0.0.1:9101` here:
 
 ```bash
 curl http://127.0.0.1:9101/health
 curl -X POST http://127.0.0.1:9101/start
 ```
 
-`POST /start` prepares the rootfs on first boot, creates the network, and
-boots Firecracker. `POST /stop` shuts the VM down. See [api.md](api.md) for
-all endpoints.
+At the first `POST /start`, Atlas makes the rootfs, builds the network, and starts Firecracker. `POST /stop` stops the VM. Read [api.md](api.md) for all the endpoints.
 
-## Disk quotas (optional)
+## Disk quotas, optional
 
-Quotas need the machine directory on an XFS filesystem. Mount a disk at
-`/var/lib/atlas` and install `xfsprogs`:
+A quota needs the machine directory on an XFS filesystem. Mount a disk at `/var/lib/atlas` and install `xfsprogs`:
 
 ```bash
 mkfs.xfs /dev/sdb
@@ -112,10 +122,10 @@ mount /dev/sdb /var/lib/atlas
 dnf install -y xfsprogs   # or: apt-get install -y xfsprogs
 ```
 
-Without XFS, quota setup is skipped and the VM still starts.
+Without XFS, Atlas does not make a quota, and the VM still starts.
 
-## Next steps
+## Next
 
-- [state.md](state.md): VM state and lifecycle
-- [network.md](network.md): VPC networking
-- [api.md](api.md): HTTP API
+- [state.md](state.md) tells you what Atlas keeps on disk.
+- [network.md](network.md) explains the network.
+- [api.md](api.md) lists the endpoints.

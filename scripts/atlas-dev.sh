@@ -85,9 +85,7 @@ hostname = "$VM_NAME"
 
 [network]
 vpc = 1
-cidr = "10.10.0.0/16"
-address = "10.10.1.20/24"
-mac = "06:00:0A:0A:01:14"
+address = "10.10.1.20"
 egress = "host"
 
 [rootfs]

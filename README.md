@@ -1,24 +1,25 @@
 # Atlas-runtime
 
-Runs Firecracker microVMs on a Linux host. One Go process per VM, managed by
-systemd. No controller, no database, no cluster manager.
+Atlas-runtime runs Firecracker microVMs on a Linux host. There is one Go process for each VM, and systemd starts and stops them. There is no controller, no database, and no cluster manager.
 
-## Docs
+## Documents
 
-- [Getting started](docs/getting-started.md): setup and first VM
-- [Architecture](docs/architecture.md): design and file layout
-- [State](docs/state.md): VM state and lifecycle
-- [Network](docs/network.md): VPC networking
-- [Disk](docs/disk.md): rootfs and disk I/O
-- [API](docs/api.md): HTTP API reference
+- [Getting started](docs/getting-started.md) tells you how to install the runtime and start your first VM.
+- [Architecture](docs/architecture.md) shows the design and the file layout.
+- [State](docs/state.md) tells you what Atlas keeps on disk, and how a VM starts and stops.
+- [Network](docs/network.md) explains VPCs, addresses, and traffic between nodes.
+- [Disk](docs/disk.md) explains the rootfs and the disk limits.
+- [API](docs/api.md) lists the HTTP endpoints.
 
 ## Install
+
+You need Linux with systemd, and root access.
 
 ```bash
 sudo bash <(curl -fsSL https://raw.githubusercontent.com/tanmoysrt/atlas-runtime/main/scripts/setup.sh)
 ```
 
-See [Getting started](docs/getting-started.md) for the full guide.
+Read [Getting started](docs/getting-started.md) for the full procedure.
 
 ## License
 

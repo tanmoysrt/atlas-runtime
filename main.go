@@ -31,7 +31,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	runtime, err := NewRuntime(configPath, config)
+	nodeConfig, nodeErr := LoadNodeConfig("/var/lib/atlas/config.json")
+	if nodeErr != nil {
+		fmt.Fprintf(os.Stderr, "node config: %v (this node stays single-node)\n", nodeErr)
+	}
+	var beacon *BeaconClient
+	if nodeConfig != nil && nodeConfig.BeaconEndpoint != "" {
+		beacon = NewBeaconClient(nodeConfig.BeaconEndpoint)
+	}
+
+	runtime, err := NewRuntime(configPath, config, nodeConfig, beacon)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create runtime: %v\n", err)
 		os.Exit(1)

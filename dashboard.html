@@ -159,6 +159,7 @@ li code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: 
     <dl>
       <dt>Instance</dt><dd id="instance">—</dd>
       <dt>Hostname</dt><dd id="hostname">—</dd>
+      <dt>VPC</dt><dd id="vpc">—</dd>
       <dt>Address</dt><dd id="address">—</dd>
       <dt>CPUs</dt><dd id="cpus">—</dd>
       <dt>Memory</dt><dd id="memory">—</dd>
@@ -292,6 +293,7 @@ async function refresh() {
   el('state').textContent = info.desired_state + (info.initialized ? '' : ' · uninitialized');
   el('instance').textContent = info.instance_id;
   el('hostname').textContent = info.hostname;
+  el('vpc').textContent = info.config.network.vpc || '—';
   el('address').textContent = info.config.network.address || '—';
   el('cpus').textContent = info.config.resources.cpus;
   el('memory').textContent = megabytes(info.config.resources.memory);

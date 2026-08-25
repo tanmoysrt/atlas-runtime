@@ -5,96 +5,123 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"strings"
-	"syscall"
+	"path/filepath"
 )
 
-// vpcNetnsName returns the network namespace for a VPC.
-// Every VM in the same VPC shares this namespace.
-func vpcNetnsName(vpcID int) string {
-	return fmt.Sprintf("atlas-vpc-%d", vpcID)
-}
+// A VPC is a Linux network namespace shared by all VMs on this node
+// that belong to the same VPC. VMs from different VPCs are isolated
+// because they live in different namespaces.
 
-// vpcVethNames returns the veth pair that connects a VPC's namespace to
-// root. Names stay short: IFNAMSIZ allows at most 15 characters.
-func vpcVethNames(vpcID int) (rootSide, nsSide string) {
-	return fmt.Sprintf("vp%dr", vpcID), fmt.Sprintf("vp%dn", vpcID)
-}
+// VM lifecycle: enter and leave the VPC
 
-// vpcVethAddress4 returns the /31 IPv4 pair for a VPC's veth. Each VPC gets
-// a different pair, so root can tell VPCs apart by this address.
-func vpcVethAddress4(vpcID int) (rootAddr, nsAddr string) {
-	base := (vpcID * 2) & 0xFFFF
-	root := net.IPv4(169, 254, byte(base>>8), byte(base))
-	ns := net.IPv4(169, 254, byte((base+1)>>8), byte(base+1))
-	return root.String() + "/31", ns.String() + "/31"
-}
-
-// vpcVethAddress6 is the IPv6 (ULA) equivalent of vpcVethAddress4.
-func vpcVethAddress6(vpcID int) (rootAddr, nsAddr string) {
-	base := (vpcID * 2) & 0xFFFF
-	return fmt.Sprintf("fd01::%x/127", base), fmt.Sprintf("fd01::%x/127", base+1)
-}
-
-// ensureVPCNetwork creates the VPC's namespace and its veth link to root,
-// and adds the VPC to the shared uplink table. It is safe to call every
-// time a VM starts: each step only runs if it has not run before.
+// vpcEnter is called when a VM starts. It creates a marker file so that we
+// know this node has VMs in the VPC, then creates the namespace and the veth
+// if they do not exist.
 //
-// A file lock guards the whole function. Several VMs in the same VPC can
-// start at the same time, for example many systemd units at boot.
-func ensureVPCNetwork(vpcID int) (string, error) {
-	netns := vpcNetnsName(vpcID)
-
-	lockFile, err := os.OpenFile("/run/atlas-network.lock", os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		return "", fmt.Errorf("network lock: %w", err)
+// It returns the namespace name so the caller can create the TAP inside it.
+func vpcEnter(vpcID int, instanceID string) (string, error) {
+	vmDir := filepath.Join(vpcRunDir(vpcID), "vms")
+	if err := os.MkdirAll(vmDir, 0755); err != nil {
+		return "", err
 	}
-	defer lockFile.Close()
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
-		return "", fmt.Errorf("flock: %w", err)
+
+	lock := newFileLock(vpcLockPath(vpcID))
+	if err := lock.lock(); err != nil {
+		return "", err
 	}
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	defer lock.unlock()
 
-	exec.Command("ip", "netns", "add", netns).Run()
-	exec.Command("ip", "-n", netns, "link", "set", "lo", "up").Run()
+	// Touch a file named after this VM. The count of files tells us
+	// whether any VMs are still running in this VPC on this node.
+	if err := os.WriteFile(filepath.Join(vmDir, instanceID), nil, 0644); err != nil {
+		return "", err
+	}
 
-	rootVeth, nsVeth := vpcVethNames(vpcID)
+	// Create namespace, veth, and uplink NAT if missing.
+	if err := ensureVPCNetwork(vpcID); err != nil {
+		return "", err
+	}
+
+	return vpcNamespaceName(vpcID), nil
+}
+
+// vpcLeave is called when a VM stops. It removes the marker file. If no VMs
+// remain, it deletes the namespace, which also removes the GRE tunnels and
+// the veth pair.
+func vpcLeave(vpcID int, instanceID string) error {
+	if err := os.MkdirAll(filepath.Join(vpcRunDir(vpcID), "vms"), 0755); err != nil {
+		return err
+	}
+
+	lock := newFileLock(vpcLockPath(vpcID))
+	if err := lock.lock(); err != nil {
+		return err
+	}
+	defer lock.unlock()
+
+	vmDir := filepath.Join(vpcRunDir(vpcID), "vms")
+	os.Remove(filepath.Join(vmDir, instanceID))
+	if entries, _ := os.ReadDir(vmDir); len(entries) > 0 {
+		return nil
+	}
+
+	rootVeth, _ := vpcVethNames(vpcID)
+	exec.Command("nft", "delete", "element", "inet", "atlas-uplink", "veth_set", "{ "+rootVeth+" }").Run()
+	exec.Command("ip", "netns", "del", vpcNamespaceName(vpcID)).Run()
+	os.RemoveAll(vpcRunDir(vpcID))
+	return nil
+}
+
+// Namespace and veth setup
+
+func ensureVPCNetwork(vpcID int) error {
+	namespace := vpcNamespaceName(vpcID)
+
+	lock := newFileLock(networkLockPath)
+	if err := lock.lock(); err != nil {
+		return err
+	}
+	defer lock.unlock()
+
+	exec.Command("ip", "netns", "add", namespace).Run()
+	exec.Command("ip", "-n", namespace, "link", "set", "lo", "up").Run()
+
+	rootVeth, namespaceVeth := vpcVethNames(vpcID)
 	if exec.Command("ip", "link", "show", rootVeth).Run() != nil {
-		createVeth(vpcID, netns, rootVeth, nsVeth)
+		createVeth(vpcID, namespace, rootVeth, namespaceVeth)
 	}
 
 	exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").Run()
 	exec.Command("sysctl", "-w", "net.ipv6.conf.all.forwarding=1").Run()
 	ensureUplinkTable(rootVeth)
+	ensureGREFilter()
 
-	return netns, nil
+	return nil
 }
 
-// createVeth adds the veth pair for a VPC, moves one end into the VPC's
-// namespace, and sets a default route on each end toward the other.
-func createVeth(vpcID int, netns, rootVeth, nsVeth string) {
-	rootAddr4, nsAddr4 := vpcVethAddress4(vpcID)
-	rootAddr6, nsAddr6 := vpcVethAddress6(vpcID)
+func createVeth(vpcID int, namespace, rootVeth, namespaceVeth string) {
+	rootAddr4, namespaceAddr4 := vpcVethAddress4(vpcID)
+	rootAddr6, namespaceAddr6 := vpcVethAddress6(vpcID)
 	rootIP4, _, _ := net.ParseCIDR(rootAddr4)
 	rootIP6, _, _ := net.ParseCIDR(rootAddr6)
 
-	exec.Command("ip", "link", "add", rootVeth, "type", "veth", "peer", "name", nsVeth).Run()
-	exec.Command("ip", "link", "set", nsVeth, "netns", netns).Run()
+	runIP("", []string{
+		"link add " + rootVeth + " type veth peer name " + namespaceVeth,
+		"link set " + namespaceVeth + " netns " + namespace,
+		"addr add " + rootAddr4 + " dev " + rootVeth,
+		"addr add " + rootAddr6 + " dev " + rootVeth,
+		"link set " + rootVeth + " up",
+	})
 
-	exec.Command("ip", "addr", "add", rootAddr4, "dev", rootVeth).Run()
-	exec.Command("ip", "-6", "addr", "add", rootAddr6, "dev", rootVeth).Run()
-	exec.Command("ip", "link", "set", rootVeth, "up").Run()
-
-	exec.Command("ip", "-n", netns, "addr", "add", nsAddr4, "dev", nsVeth).Run()
-	exec.Command("ip", "-n", netns, "-6", "addr", "add", nsAddr6, "dev", nsVeth).Run()
-	exec.Command("ip", "-n", netns, "link", "set", nsVeth, "up").Run()
-	exec.Command("ip", "-n", netns, "route", "add", "default", "via", rootIP4.String(), "dev", nsVeth).Run()
-	exec.Command("ip", "-n", netns, "-6", "route", "add", "default", "via", rootIP6.String(), "dev", nsVeth).Run()
+	runIP(namespace, []string{
+		"addr add " + namespaceAddr4 + " dev " + namespaceVeth,
+		"addr add " + namespaceAddr6 + " dev " + namespaceVeth,
+		"link set " + namespaceVeth + " up",
+		"route add default via " + rootIP4.String() + " dev " + namespaceVeth,
+		"route add default via " + rootIP6.String() + " dev " + namespaceVeth,
+	})
 }
 
-// ensureUplinkTable creates the shared "atlas-uplink" nft table if it does
-// not exist, and adds a VPC's root-side veth to its set of interfaces. This
-// is the second hop of a two-hop NAT; see network.go's setupNftables.
 func ensureUplinkTable(rootVeth string) {
 	if exec.Command("nft", "list", "table", "inet", "atlas-uplink").Run() != nil {
 		script := `
@@ -103,20 +130,43 @@ add chain inet atlas-uplink postrouting { type nat hook postrouting priority src
 add set inet atlas-uplink veth_set { type ifname ; }
 add rule inet atlas-uplink postrouting iifname @veth_set masquerade
 `
-		command := exec.Command("nft", "-f", "-")
-		command.Stdin = strings.NewReader(script)
-		command.Run()
+		runScript(exec.Command("nft", "-f", "-"), script)
 	}
-
 	exec.Command("nft", "add", "element", "inet", "atlas-uplink", "veth_set", "{ "+rootVeth+" }").Run()
 }
 
-// nsIPCommand runs an `ip` subcommand inside a network namespace.
-func nsIPCommand(netns string, args ...string) *exec.Cmd {
-	return exec.Command("ip", append([]string{"-n", netns}, args...)...)
+const networkLockPath = "/run/atlas-network.lock"
+
+func vpcNamespaceName(vpcID int) string {
+	return fmt.Sprintf("atlas-vpc-%d", vpcID)
 }
 
-// nsExecCommand runs a command inside a network namespace.
-func nsExecCommand(netns, binary string, args ...string) *exec.Cmd {
-	return exec.Command("ip", append([]string{"netns", "exec", netns, binary}, args...)...)
+func vpcRunDir(vpcID int) string {
+	return fmt.Sprintf("/run/atlas-vpc-%d", vpcID)
+}
+
+func vpcLockPath(vpcID int) string {
+	return filepath.Join(vpcRunDir(vpcID), "lock")
+}
+
+func vpcMemberKey(vpcID int, instanceID string) string {
+	return fmt.Sprintf("vpc-member/%d/%s", vpcID, instanceID)
+}
+
+func vpcVethNames(vpcID int) (rootSide, namespaceSide string) {
+	return fmt.Sprintf("vp%dr", vpcID), fmt.Sprintf("vp%dn", vpcID)
+}
+
+const vethRangeStart = 0x8000
+
+func vpcVethAddress4(vpcID int) (rootAddr, namespaceAddr string) {
+	base := vethRangeStart | ((vpcID * 2) & 0x7FFE)
+	root := net.IPv4(169, 254, byte(base>>8), byte(base))
+	namespace := net.IPv4(169, 254, byte((base+1)>>8), byte(base+1))
+	return root.String() + "/31", namespace.String() + "/31"
+}
+
+func vpcVethAddress6(vpcID int) (rootAddr, namespaceAddr string) {
+	base := (vpcID * 2) & 0xFFFE
+	return fmt.Sprintf("fd01::%x/127", base), fmt.Sprintf("fd01::%x/127", base+1)
 }

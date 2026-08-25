@@ -18,8 +18,9 @@ debootstrap --variant=minbase noble "$MNT" http://archive.ubuntu.com/ubuntu
 
 # systemd-sysv provides /sbin/init. curl is needed by the MMDS helpers.
 # udev creates device units (e.g. dev-ttyS0.device) for the serial console.
+# iputils-ping is here to test a new VPC from inside a guest.
 chroot "$MNT" apt-get install -y --no-install-recommends \
-    systemd-sysv udev openssh-server curl iproute2
+    systemd-sysv udev openssh-server curl iproute2 iputils-ping
 
 # fcnet.sh derives a static IPv4 and a matching IPv6 from the MAC address
 # (Firecracker convention) and writes resolv.conf. Both are unnumbered /32

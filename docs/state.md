@@ -1,60 +1,63 @@
 # VM State
 
-## Files
+Atlas keeps as little state as possible. `config.toml` is what you set. `metadata.json` is what Atlas remembers.
 
-Persistent state lives in the machine directory only:
+## Files in the machine directory
 
-| File | Purpose |
+| File | What it holds |
 | --- | --- |
-| `config.toml` | User configuration. The persistent authority. |
-| `metadata.json` | Machine state: `instance_id`, `initialized`, `desired_state`, `private_ip`. |
-| `rootfs` | VM disk image. |
-| `console.log` | Serial console history. Append-only. |
-| `runtime/` | Disposable runtime state: Firecracker socket, serial FIFOs. |
+| `config.toml` | Your configuration. This file is the authority. |
+| `metadata.json` | The state of the machine: `instance_id`, `initialized`, `desired_state`, and `private_ip`. |
+| `rootfs` | The disk of the VM. |
+| `console.log` | The history of the serial console. Atlas only adds to this file. |
+| `runtime/` | Temporary files: the Firecracker socket and the serial FIFOs. You can delete this directory at any time. |
 
-`metadata.json` answers these questions, never in-memory state:
+## Files outside the machine directory
 
-- Was this VM initialized?
-- Should it run after a host reboot?
-- What IP and hostname does it use?
+| Path | What it holds |
+| --- | --- |
+| `/var/lib/atlas/config.json` | The identity of the host, not of a VM: `node_id`, `gre_address`, and `beacon_endpoint`. Atlas reads it one time at start. The file is optional. Without it, the node runs alone. |
+| `/run/atlas-vpc-<id>/` | Temporary VPC state: one marker file for each VM that runs, and the lock for the namespace. The last VM removes the directory. |
 
-## Boot
+## What metadata.json answers
 
-`[boot]` is creation-time configuration. It is consumed once:
+Atlas reads these answers from the file, and never from memory:
+
+- Did this VM start for the first time already?
+- Must this VM run after the host starts again?
+- Which address and which hostname does it use?
+
+## First start
+
+The `[boot]` section is creation-time configuration. Atlas uses it one time:
 
 ```text
 metadata.initialized = false
         │
         ▼
-  consume [boot] (image or snapshot)
+  read [boot]: an image or a snapshot
         │
         ▼
-   create rootfs, set initialized=true
+  make the rootfs, then set initialized = true
         │
         ▼
-  normal start/stop/reboot uses existing rootfs
+  each later start uses the rootfs that exists
 ```
 
-After `initialized=true`, changes to `image`, `snapshot`, `kernel`,
-`rootfs.size`, or `hostname` have no effect. To apply them, create a new
-machine directory.
+After `initialized` becomes `true`, a change to `image`, `snapshot`, `kernel`, `rootfs.size`, or `hostname` has no result. To use a new value, make a new machine directory.
 
-The hostname is captured on the first run: `boot.hostname`, or the machine ID
-if it is empty. No API endpoint can change it later.
+Atlas keeps the hostname at the first start. It uses `boot.hostname`, or the machine ID if `boot.hostname` is empty. No endpoint can change the hostname later.
 
 ## Desired state
 
-`desired_state` is either `running` or `stopped`. The runtime saves it before
-acting on it, so a crash during shutdown cannot cause a restart loop.
+`desired_state` is `running` or `stopped`. Atlas writes this value before it acts on it. A crash during a shutdown can therefore not cause a loop of restarts.
 
-- Host reboot with `desired_state=running`: the VM starts again.
-- Host reboot with `desired_state=stopped`: the VM stays stopped.
-- A VM reboot does not change `desired_state`.
+- The host starts again and `desired_state` is `running`: the VM starts.
+- The host starts again and `desired_state` is `stopped`: the VM stays stopped.
+- A reboot of the VM does not change `desired_state`.
 
-## Process recovery
+## Recovery
 
-systemd restarts `atlas-runtime` if it dies. On startup, the runtime reads
-`metadata.json` and starts every VM whose `desired_state` is `running`.
+systemd starts `atlas-runtime` again if the process stops. At start, the runtime reads `metadata.json`, and it starts the VM if `desired_state` is `running`.
 
-The runtime does not watch Firecracker while it runs. If Firecracker dies,
-call `POST /start` to bring the VM back.
+The runtime does not watch Firecracker while it runs. If Firecracker stops, send `POST /start` to get the VM back.
