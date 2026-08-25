@@ -48,6 +48,16 @@ func SaveMetadata(path string, metadata *Metadata) error {
 	}
 	defer os.Remove(tempFile.Name())
 
+	// os.CreateTemp makes a 0600 file. Keep the mode of the file being
+	// replaced, or one API write makes metadata.json unreadable to the operator.
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
+	if err := tempFile.Chmod(mode); err != nil {
+		tempFile.Close()
+		return err
+	}
 	if _, err := tempFile.Write(data); err != nil {
 		return err
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -9,12 +10,17 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: atlas-runtime <config.toml>")
+	var enableDashboard bool
+	flag.BoolVar(&enableDashboard, "enable-dashboard", false, "enable web dashboard at /")
+	flag.Parse()
+
+	if flag.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: atlas-runtime [options] <config.toml>")
+		flag.PrintDefaults()
 		os.Exit(1)
 	}
 
-	configPath := os.Args[1]
+	configPath := flag.Arg(0)
 	config, err := LoadConfig(configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
@@ -47,7 +53,9 @@ func main() {
 		}
 	}()
 
-	if err := runtime.Run(ctx); err != nil {
+	api := NewAPI(runtime, enableDashboard)
+
+	if err := runtime.Run(ctx, api); err != nil {
 		fmt.Fprintf(os.Stderr, "run: %v\n", err)
 		os.Exit(1)
 	}

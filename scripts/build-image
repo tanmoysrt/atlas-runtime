@@ -94,6 +94,37 @@ curl -fsSL -H "X-metadata-token:$TOKEN" http://169.254.169.254/ssh/authorized_ke
 EOF
 chmod +x "$MNT/usr/local/bin/atlas-mmds-ssh-keys"
 
+# User-data helper: runs the [cloud_init] user_data script from config.toml.
+# Only the script form of cloud-init user-data is supported (a body that
+# starts with "#!"). This image has no cloud-init package, so #cloud-config
+# YAML is ignored. The script runs on every boot, so keep it idempotent.
+cat > "$MNT/usr/local/bin/atlas-user-data" <<'EOF'
+#!/bin/bash
+TOKEN=$(curl -fsSL -X PUT -H "X-metadata-token-ttl-seconds: 60" http://169.254.169.254/latest/api/token 2>/dev/null)
+BODY=$(curl -fsSL -H "X-metadata-token:$TOKEN" http://169.254.169.254/cloud-init/user-data 2>/dev/null)
+case "$BODY" in
+    "#!"*) ;;
+    *) exit 0 ;;
+esac
+printf '%s\n' "$BODY" > /run/atlas-user-data
+chmod +x /run/atlas-user-data
+exec /run/atlas-user-data
+EOF
+chmod +x "$MNT/usr/local/bin/atlas-user-data"
+
+cat > "$MNT/etc/systemd/system/atlas-user-data.service" <<'EOF'
+[Unit]
+Description=Atlas user-data script
+After=fcnet.service
+Requires=fcnet.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/atlas-user-data
+[Install]
+WantedBy=multi-user.target
+EOF
+ln -sf /etc/systemd/system/atlas-user-data.service "$MNT/etc/systemd/system/multi-user.target.wants/atlas-user-data.service"
+
 cat > "$MNT/etc/ssh/sshd_config.d/atlas.conf" <<'EOF'
 AuthorizedKeysCommand /usr/local/bin/atlas-mmds-ssh-keys
 AuthorizedKeysCommandUser root

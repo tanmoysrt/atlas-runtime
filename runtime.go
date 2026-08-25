@@ -64,11 +64,11 @@ func bootHostname(configured, machineDir string) string {
 }
 
 // Run starts the HTTP API and recovers any VM that should be running.
-func (instance *Runtime) Run(ctx context.Context) error {
+func (instance *Runtime) Run(ctx context.Context, api *API) error {
 	if instance.meta.DesiredState == "running" {
 		_ = instance.Start()
 	}
-	return NewAPI(instance).Serve(ctx, instance.config.Runtime.Listen)
+	return api.Serve(ctx, instance.config.Runtime.Listen)
 }
 
 // Reload re-reads config.toml and applies changes that don't need a reboot.

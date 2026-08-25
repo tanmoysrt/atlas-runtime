@@ -92,18 +92,30 @@ egress = "host"
 
 [rootfs]
 size = 2147483648
+
+[cloud_init]
+user_data = """
+#!/bin/bash
+echo 'root:toor' | chpasswd
+"""
 EOF
 	echo "Created $VM_NAME at $MACHINE_DIR/config.toml"
 fi
 
-LISTEN=$(grep -Po '(?<=^listen = ")[^"]+' "$MACHINE_DIR/config.toml")
+# The runtime rewrites config.toml through a TOML encoder that indents keys
+# under their table header, so do not anchor the key to the start of the line.
+LISTEN=$(grep -Po '^\s*listen\s*=\s*"\K[^"]+' "$MACHINE_DIR/config.toml" || true)
+if [ -z "$LISTEN" ]; then
+	echo "no [runtime] listen address in $MACHINE_DIR/config.toml" >&2
+	exit 1
+fi
 BASE_URL="http://$LISTEN"
 
 echo "API: $BASE_URL"
 echo "Starting atlas-runtime for $VM_NAME. It needs root for ip, nft, and netns."
 echo "Ctrl-C stops the API process, not the VM or its network."
 echo
-sudo env PATH="$DEV_DIR/firecracker:$PATH" "$BINARY" "$MACHINE_DIR/config.toml" &
+	sudo env PATH="$DEV_DIR/firecracker:$PATH" "$BINARY" --enable-dashboard "$MACHINE_DIR/config.toml" &
 RUNTIME_PID=$!
 trap 'kill "$RUNTIME_PID" 2>/dev/null' INT TERM
 

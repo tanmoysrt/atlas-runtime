@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atlas</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+<style>
+/* Neutral ramp and control sizes follow Frappe Espresso / frappe-ui. */
+:root {
+  --white: #ffffff;
+  --gray-1: #f9f9f9;
+  --gray-2: #f4f4f4;
+  --gray-3: #ededed;
+  --gray-4: #e2e2e2;
+  --line: #e9e9e9;
+  --ink: #171717;
+  --muted: #4b4b4b;
+  --faint: #a6a6a6;
+  --term: #16161a;
+  --control: 28px;
+  --header: 56px;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  height: 100vh;
+  display: flex;
+  font: 13px/1.5 var(--sans);
+  background: var(--gray-1);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+aside {
+  width: 380px;
+  flex: none;
+  overflow-y: auto;
+  background: var(--white);
+  border-right: 1px solid var(--line);
+}
+main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+@media (max-width: 900px) {
+  body { flex-direction: column; }
+  aside { width: 100%; max-height: 50vh; border-right: 0; border-bottom: 1px solid var(--line); }
+}
+
+/* One fixed height keeps the two pane headers aligned, whatever they hold. */
+header, #bar {
+  flex: none;
+  display: flex; align-items: center; gap: 10px;
+  height: var(--header);
+  padding: 0 20px;
+  border-bottom: 1px solid var(--line);
+}
+header b { font-size: 14px; }
+header span { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+#bar h2 { margin-right: auto; }
+#bar span { color: var(--faint); font-size: 12px; }
+#bar span.on { color: var(--muted); }
+
+section { padding: 18px 20px; border-bottom: 1px solid var(--line); }
+section:last-child { border-bottom: 0; }
+h2 {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.07em; color: var(--faint);
+}
+section h2 { margin-bottom: 12px; }
+
+dl { display: grid; grid-template-columns: 90px 1fr; gap: 7px 12px; }
+dt { color: var(--muted); }
+dd { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.row { display: flex; gap: 6px; }
+.row + .row { margin-top: 6px; }
+
+button, input {
+  height: var(--control);
+  border: 0;
+  border-radius: 6px;
+  background: var(--gray-2);
+}
+button {
+  flex: none;
+  padding: 0 10px;
+  font: 500 12px var(--sans);
+  color: var(--muted);
+  cursor: pointer;
+}
+button:hover { background: var(--gray-3); color: var(--ink); }
+button:active { background: var(--gray-4); }
+button.link {
+  height: auto; padding: 0; background: none; color: var(--faint);
+  text-decoration: underline; text-underline-offset: 2px;
+}
+button.link:hover { background: none; color: var(--ink); }
+
+input {
+  flex: 1; min-width: 0;
+  padding: 0 8px;
+  font: 12px var(--mono);
+  color: var(--ink);
+}
+input:focus { outline: 1px solid var(--faint); outline-offset: -1px; }
+input::placeholder { color: var(--faint); font-family: var(--sans); }
+
+ul { list-style: none; display: grid; gap: 4px; margin-top: 12px; }
+li {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 6px 8px;
+  background: var(--gray-2);
+  border-radius: 6px;
+  font: 11px var(--mono);
+  color: var(--muted);
+}
+li code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.empty { background: none; color: var(--faint); }
+
+#screen {
+  flex: 1; min-height: 0;
+  margin: 20px 20px 24px;
+  padding: 12px;
+  background: var(--term);
+  border-radius: 8px;
+  overflow: hidden;
+}
+#screen .xterm-viewport { scrollbar-width: thin; scrollbar-color: #3a3a40 transparent; }
+
+#toast {
+  position: fixed; bottom: 20px; left: 50%;
+  padding: 8px 14px;
+  background: var(--ink);
+  color: var(--white);
+  border-radius: 6px;
+  font-size: 12px;
+  transform: translate(-50%, 60px);
+  opacity: 0;
+  transition: transform 0.2s, opacity 0.2s;
+}
+#toast.show { transform: translate(-50%, 0); opacity: 1; }
+</style>
+</head>
+<body>
+<aside>
+  <header><b>Atlas</b><span id="state">…</span></header>
+
+  <section>
+    <h2>Machine</h2>
+    <dl>
+      <dt>Instance</dt><dd id="instance">—</dd>
+      <dt>Hostname</dt><dd id="hostname">—</dd>
+      <dt>Address</dt><dd id="address">—</dd>
+      <dt>CPUs</dt><dd id="cpus">—</dd>
+      <dt>Memory</dt><dd id="memory">—</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Power</h2>
+    <div class="row">
+      <button onclick="call('start', 'POST', '/start')">Start</button>
+      <button onclick="call('stop', 'POST', '/stop')">Stop</button>
+      <button onclick="call('reboot', 'POST', '/reboot')">Reboot</button>
+      <button onclick="call('reload', 'POST', '/reload')">Reload</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Resources</h2>
+    <div class="row">
+      <input id="in-cpus" type="number" min="1" placeholder="CPUs">
+      <input id="in-memory" type="number" min="64" placeholder="Memory (MB)">
+      <button onclick="resize()">Resize</button>
+    </div>
+    <div class="row">
+      <input id="in-ingress" type="number" placeholder="Ingress (bps)">
+      <input id="in-egress" type="number" placeholder="Egress (bps)">
+      <button onclick="bandwidth()">Limit</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Public IP</h2>
+    <div class="row">
+      <input id="in-ipv4" placeholder="IPv4">
+      <input id="in-ipv6" placeholder="IPv6">
+      <button onclick="publicIP()">Map</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>SSH keys</h2>
+    <div class="row">
+      <input id="in-key" placeholder="ssh-ed25519 …">
+      <button onclick="addKey()">Add</button>
+    </div>
+    <ul id="keys"></ul>
+  </section>
+
+  <section>
+    <h2>Maintenance</h2>
+    <div class="row">
+      <input id="in-snapshot" placeholder="Snapshot name">
+      <button onclick="snapshot()">Snapshot</button>
+    </div>
+    <div class="row">
+      <input id="in-sysrq" maxlength="1" placeholder="SysRq key (b, c, s, …)">
+      <button onclick="sysrq()">Send</button>
+    </div>
+  </section>
+</aside>
+
+<main>
+  <div id="bar">
+    <h2>Serial console</h2>
+    <span id="link">Disconnected</span>
+    <button id="toggle" onclick="toggle()">Connect</button>
+  </div>
+  <div id="screen"></div>
+</main>
+
+<div id="toast"></div>
+
+<script>
+const el = id => document.getElementById(id);
+const text = id => el(id).value.trim();
+const number = id => Number(el(id).value) || 0;
+
+function toast(message) {
+  const box = el('toast');
+  box.textContent = message;
+  box.classList.add('show');
+  clearTimeout(box.timer);
+  box.timer = setTimeout(() => box.classList.remove('show'), 2500);
+}
+
+// send returns the response body as text, or throws the server's error message.
+async function send(method, path, body) {
+  const response = await fetch(path, {
+    method,
+    headers: body ? {'Content-Type': 'application/json'} : {},
+    body: body ? JSON.stringify(body) : null,
+  });
+  const payload = await response.text();
+  if (!response.ok) throw new Error(payload.trim() || response.statusText);
+  return payload;
+}
+
+// call runs one API request, reports the outcome, and refreshes the machine view.
+async function call(label, method, path, body) {
+  try {
+    await send(method, path, body);
+    toast(label + ' ok');
+    refresh();
+  } catch (error) {
+    toast(label + ': ' + error.message);
+  }
+}
+
+const megabytes = bytes => Math.round(bytes / (1 << 20)) + ' MB';
+
+async function refresh() {
+  let info;
+  try {
+    info = JSON.parse(await send('GET', '/info'));
+  } catch (error) {
+    el('state').textContent = 'unreachable';
+    return;
+  }
+  el('state').textContent = info.desired_state + (info.initialized ? '' : ' · uninitialized');
+  el('instance').textContent = info.instance_id;
+  el('hostname').textContent = info.hostname;
+  el('address').textContent = info.config.network.address || '—';
+  el('cpus').textContent = info.config.resources.cpus;
+  el('memory').textContent = megabytes(info.config.resources.memory);
+  showKeys(info.config.ssh.authorized_keys || []);
+}
+
+function showKeys(keys) {
+  if (!keys.length) {
+    el('keys').innerHTML = '<li class="empty">No keys</li>';
+    return;
+  }
+  el('keys').replaceChildren(...keys.map((key, index) => {
+    const item = document.createElement('li');
+    const label = document.createElement('code');
+    label.textContent = key;
+    label.title = key;
+    const remove = document.createElement('button');
+    remove.className = 'link';
+    remove.textContent = 'remove';
+    remove.onclick = () => call('remove key', 'DELETE', '/ssh-keys/' + index);
+    item.append(label, remove);
+    return item;
+  }));
+}
+
+function resize() {
+  const cpus = number('in-cpus'), memory = number('in-memory');
+  if (!cpus || !memory) return toast('resize: need CPUs and memory');
+  call('resize', 'POST', '/resize', {cpus, memory: memory * (1 << 20)});
+}
+
+function bandwidth() {
+  call('bandwidth', 'PUT', '/network/bandwidth', {
+    ingress_bandwidth: number('in-ingress'),
+    egress_bandwidth: number('in-egress'),
+  });
+}
+
+function publicIP() {
+  call('public ip', 'PUT', '/network/public-ip', {
+    public_ipv4: text('in-ipv4'),
+    public_ipv6: text('in-ipv6'),
+  });
+}
+
+function addKey() {
+  const key = text('in-key');
+  if (!key) return;
+  el('in-key').value = '';
+  call('add key', 'POST', '/ssh-keys', {key});
+}
+
+function snapshot() {
+  const id = text('in-snapshot');
+  if (id) call('snapshot', 'POST', '/snapshot', {id});
+}
+
+function sysrq() {
+  const key = text('in-sysrq');
+  if (key) call('sysrq', 'POST', '/sysrq', {key});
+}
+
+let socket = null;
+let terminal = null;
+
+function openTerminal() {
+  if (terminal) return;
+  terminal = new Terminal({
+    fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
+    fontSize: 13,
+    cursorBlink: true,
+    scrollback: 10000,
+    theme: {background: '#16161a', foreground: '#d4d4d8', cursor: '#d4d4d8', selectionBackground: '#3a3a40'},
+  });
+  const fit = new FitAddon.FitAddon();
+  terminal.loadAddon(fit);
+  terminal.open(el('screen'));
+  fit.fit();
+  new ResizeObserver(() => fit.fit()).observe(el('screen'));
+  terminal.onData(data => socket && socket.send(data));
+}
+
+function setLink(connected) {
+  el('link').textContent = connected ? 'Connected' : 'Disconnected';
+  el('link').classList.toggle('on', connected);
+  el('toggle').textContent = connected ? 'Disconnect' : 'Connect';
+}
+
+function toggle() {
+  if (socket) return socket.close();
+  connect();
+}
+
+async function connect() {
+  try {
+    openTerminal();
+    const {token} = JSON.parse(await send('POST', '/console'));
+    const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    socket = new WebSocket(scheme + '//' + location.host + '/console/attach?token=' + encodeURIComponent(token));
+    socket.binaryType = 'arraybuffer';
+    socket.onopen = () => { setLink(true); terminal.focus(); };
+    socket.onmessage = event => terminal.write(new TextDecoder().decode(event.data).replace(/\n/g, '\r\n'));
+    socket.onclose = () => { socket = null; setLink(false); };
+  } catch (error) {
+    toast('console: ' + error.message);
+  }
+}
+
+refresh();
+setInterval(refresh, 5000);
+connect();
+</script>
+</body>
+</html>

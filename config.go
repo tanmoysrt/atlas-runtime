@@ -11,64 +11,64 @@ import (
 
 // Config is the user-facing configuration for a single VM.
 type Config struct {
-	Runtime   RuntimeConfig   `toml:"runtime"`
-	Resources ResourcesConfig `toml:"resources"`
-	Boot      BootConfig      `toml:"boot"`
-	Network   NetworkConfig   `toml:"network"`
-	Rootfs    RootfsConfig    `toml:"rootfs"`
-	SSH       SSHConfig       `toml:"ssh"`
-	CloudInit CloudInitConfig `toml:"cloud_init"`
+	Runtime   RuntimeConfig   `toml:"runtime" json:"runtime"`
+	Resources ResourcesConfig `toml:"resources" json:"resources"`
+	Boot      BootConfig      `toml:"boot" json:"boot"`
+	Network   NetworkConfig   `toml:"network" json:"network"`
+	Rootfs    RootfsConfig    `toml:"rootfs" json:"rootfs"`
+	SSH       SSHConfig       `toml:"ssh" json:"ssh"`
+	CloudInit CloudInitConfig `toml:"cloud_init" json:"cloud_init"`
 }
 
 // RuntimeConfig controls the atlas-runtime HTTP server.
 type RuntimeConfig struct {
-	Listen string `toml:"listen"`
+	Listen string `toml:"listen" json:"listen"`
 }
 
 // ResourcesConfig defines CPU and memory limits.
 type ResourcesConfig struct {
-	CPUs   int   `toml:"cpus"`
-	Memory int64 `toml:"memory"`
+	CPUs   int   `toml:"cpus" json:"cpus"`
+	Memory int64 `toml:"memory" json:"memory"`
 }
 
 // BootConfig defines the kernel and rootfs source. Only used on first boot.
 type BootConfig struct {
-	Image    string `toml:"image"`
-	Snapshot string `toml:"snapshot"`
-	Kernel   string `toml:"kernel"`
-	Cmdline  string `toml:"cmdline"`
-	Hostname string `toml:"hostname"`
+	Image    string `toml:"image" json:"image"`
+	Snapshot string `toml:"snapshot" json:"snapshot"`
+	Kernel   string `toml:"kernel" json:"kernel"`
+	Cmdline  string `toml:"cmdline" json:"cmdline"`
+	Hostname string `toml:"hostname" json:"hostname"`
 }
 
 // NetworkConfig defines the single NIC for this VM.
 type NetworkConfig struct {
-	VPC              int      `toml:"vpc"`
-	CIDR             string   `toml:"cidr"`
-	Address          string   `toml:"address"`
-	MAC              string   `toml:"mac"`
-	Egress           string   `toml:"egress"`
-	IngressBandwidth int64    `toml:"ingress_bandwidth"`
-	EgressBandwidth  int64    `toml:"egress_bandwidth"`
-	Nameservers      []string `toml:"nameservers"`
-	PublicIPv4       string   `toml:"public_ipv4"`
-	PublicIPv6       string   `toml:"public_ipv6"`
+	VPC              int      `toml:"vpc" json:"vpc"`
+	CIDR             string   `toml:"cidr" json:"cidr"`
+	Address          string   `toml:"address" json:"address"`
+	MAC              string   `toml:"mac" json:"mac"`
+	Egress           string   `toml:"egress" json:"egress"`
+	IngressBandwidth int64    `toml:"ingress_bandwidth" json:"ingress_bandwidth"`
+	EgressBandwidth  int64    `toml:"egress_bandwidth" json:"egress_bandwidth"`
+	Nameservers      []string `toml:"nameservers" json:"nameservers"`
+	PublicIPv4       string   `toml:"public_ipv4" json:"public_ipv4"`
+	PublicIPv6       string   `toml:"public_ipv6" json:"public_ipv6"`
 }
 
 // SSHConfig holds authorized keys injected via MMDS.
 type SSHConfig struct {
-	AuthorizedKeys []string `toml:"authorized_keys"`
+	AuthorizedKeys []string `toml:"authorized_keys" json:"authorized_keys"`
 }
 
 // RootfsConfig defines the size and I/O rate limits of the VM's root disk.
 type RootfsConfig struct {
-	Size      int64 `toml:"size"`
-	Bandwidth int64 `toml:"bandwidth"` // bytes/sec, 0 = unlimited
-	IOPS      int   `toml:"iops"`      // ops/sec, 0 = unlimited
+	Size      int64 `toml:"size" json:"size"`
+	Bandwidth int64 `toml:"bandwidth" json:"bandwidth"` // bytes/sec, 0 = unlimited
+	IOPS      int   `toml:"iops" json:"iops"`           // ops/sec, 0 = unlimited
 }
 
 // CloudInitConfig holds cloud-init user-data passed through MMDS.
 type CloudInitConfig struct {
-	UserData string `toml:"user_data"`
+	UserData string `toml:"user_data" json:"user_data"`
 }
 
 // LoadConfig parses a TOML file into a Config struct.
@@ -88,6 +88,16 @@ func SaveConfig(path string, config *Config) error {
 	}
 	defer os.Remove(tempFile.Name())
 
+	// os.CreateTemp makes a 0600 file. Keep the mode of the file being
+	// replaced, or one API write makes config.toml unreadable to the operator.
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
+	if err := tempFile.Chmod(mode); err != nil {
+		tempFile.Close()
+		return err
+	}
 	if err := toml.NewEncoder(tempFile).Encode(config); err != nil {
 		tempFile.Close()
 		return err

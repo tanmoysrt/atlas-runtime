@@ -1,6 +1,8 @@
 package main
 
 import (
+	_ "embed"
+
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -13,26 +15,35 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+//go:embed dashboard.html
+var dashboardHTML string
+
 // API exposes the runtime's HTTP and WebSocket endpoints.
 type API struct {
-	runtime  *Runtime
-	tokens   map[string]time.Time
-	mutex    sync.Mutex
-	upgrader websocket.Upgrader
+	runtime         *Runtime
+	tokens          map[string]time.Time
+	mutex           sync.Mutex
+	upgrader        websocket.Upgrader
+	enableDashboard bool
 }
 
 // NewAPI creates a new API handler for the given runtime.
-func NewAPI(runtime *Runtime) *API {
+func NewAPI(runtime *Runtime, enableDashboard bool) *API {
 	return &API{
-		runtime:  runtime,
-		tokens:   make(map[string]time.Time),
-		upgrader: websocket.Upgrader{CheckOrigin: func(request *http.Request) bool { return true }},
+		runtime:         runtime,
+		tokens:          make(map[string]time.Time),
+		upgrader:        websocket.Upgrader{CheckOrigin: func(request *http.Request) bool { return true }},
+		enableDashboard: enableDashboard,
 	}
 }
 
 // Serve starts the HTTP server and blocks until the context is cancelled.
 func (api *API) Serve(ctx context.Context, address string) error {
 	serveMux := http.NewServeMux()
+
+	if api.enableDashboard {
+		serveMux.HandleFunc("GET /{$}", api.handleDashboard)
+	}
 
 	// Lifecycle endpoints.
 	serveMux.HandleFunc("GET /info", api.handleInfo)
@@ -61,6 +72,11 @@ func (api *API) Serve(ctx context.Context, address string) error {
 	server := &http.Server{Addr: address, Handler: serveMux}
 	go func() { <-ctx.Done(); server.Shutdown(context.Background()) }()
 	return server.ListenAndServe()
+}
+
+func (api *API) handleDashboard(writer http.ResponseWriter, request *http.Request) {
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	writer.Write([]byte(dashboardHTML))
 }
 
 // decode reads JSON from the request body into the target value.
