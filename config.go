@@ -18,6 +18,7 @@ type Config struct {
 	Rootfs    RootfsConfig    `toml:"rootfs" json:"rootfs"`
 	SSH       SSHConfig       `toml:"ssh" json:"ssh"`
 	CloudInit CloudInitConfig `toml:"cloud_init" json:"cloud_init"`
+	Firewall  FirewallConfig  `toml:"firewall" json:"firewall"`
 }
 
 // RuntimeConfig controls the atlas-runtime HTTP server.
@@ -67,6 +68,24 @@ type RootfsConfig struct {
 // CloudInitConfig holds cloud-init user-data passed through MMDS.
 type CloudInitConfig struct {
 	UserData string `toml:"user_data" json:"user_data"`
+}
+
+// FirewallConfig lists the rules that allow traffic in and out of the VM.
+// Both directions are deny-by-default. Atlas always allows DNS to the
+// configured nameservers, regardless of these rules.
+type FirewallConfig struct {
+	Ingress []FirewallRule `toml:"ingress" json:"ingress"`
+	Egress  []FirewallRule `toml:"egress" json:"egress"`
+}
+
+// FirewallRule allows one protocol between the VM and an optional peer.
+// An empty source or destination means anywhere.
+type FirewallRule struct {
+	Protocol    string `toml:"protocol" json:"protocol"`       // tcp, udp, icmp, or all
+	Port        int    `toml:"port" json:"port"`               // single port or range start
+	PortEnd     int    `toml:"port_end" json:"port_end"`       // range end; 0 or equal means one port
+	Source      string `toml:"source" json:"source"`           // optional IP or CIDR
+	Destination string `toml:"destination" json:"destination"` // optional IP or CIDR
 }
 
 // LoadConfig parses a TOML file into a Config struct.
@@ -120,6 +139,9 @@ func (config *Config) Validate() error {
 	if err := config.Network.validate(); err != nil {
 		return err
 	}
+	if err := config.Firewall.validate(); err != nil {
+		return err
+	}
 	if _, err := net.ResolveTCPAddr("tcp", config.Runtime.Listen); err != nil {
 		return fmt.Errorf("invalid listen: %w", err)
 	}
@@ -144,6 +166,66 @@ func (network NetworkConfig) validate() error {
 		return fmt.Errorf("address must be one IPv4 address: %s", network.Address)
 	}
 	return network.validatePublicIPs()
+}
+
+func (firewall FirewallConfig) validate() error {
+	for _, rule := range firewall.Ingress {
+		if err := rule.validate(); err != nil {
+			return fmt.Errorf("firewall ingress: %w", err)
+		}
+	}
+	for _, rule := range firewall.Egress {
+		if err := rule.validate(); err != nil {
+			return fmt.Errorf("firewall egress: %w", err)
+		}
+	}
+	return nil
+}
+
+// nonNil returns the firewall with nil slices replaced by empty slices, so it
+// encodes as empty lists rather than null.
+func (firewall FirewallConfig) nonNil() FirewallConfig {
+	if firewall.Ingress == nil {
+		firewall.Ingress = []FirewallRule{}
+	}
+	if firewall.Egress == nil {
+		firewall.Egress = []FirewallRule{}
+	}
+	return firewall
+}
+
+func (rule FirewallRule) validate() error {
+	switch rule.Protocol {
+	case "tcp", "udp":
+		if rule.Port < 1 || rule.Port > 65535 {
+			return fmt.Errorf("port must be between 1 and 65535")
+		}
+		if rule.PortEnd != 0 && (rule.PortEnd < rule.Port || rule.PortEnd > 65535) {
+			return fmt.Errorf("port_end must be between port and 65535")
+		}
+	case "icmp", "all":
+		if rule.Port != 0 || rule.PortEnd != 0 {
+			return fmt.Errorf("port is not used with protocol %s", rule.Protocol)
+		}
+	default:
+		return fmt.Errorf("protocol must be tcp, udp, icmp, or all")
+	}
+	if rule.Source != "" && !validAddress(rule.Source) {
+		return fmt.Errorf("invalid source: %s", rule.Source)
+	}
+	if rule.Destination != "" && !validAddress(rule.Destination) {
+		return fmt.Errorf("invalid destination: %s", rule.Destination)
+	}
+	return nil
+}
+
+// validAddress reports whether an address is a bare IP or a CIDR.
+func validAddress(address string) bool {
+	if net.ParseIP(address) != nil {
+		return true
+	}
+	_, _, err := net.ParseCIDR(address)
+	return err == nil
 }
 
 func (network NetworkConfig) validatePublicIPs() error {

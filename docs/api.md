@@ -97,6 +97,8 @@ If the VM runs, Atlas sends the key to MMDS immediately.
 | --- | --- | --- |
 | `PUT` | `/network/bandwidth` | Changes the speed limits of the network. |
 | `PUT` | `/network/public-ip` | Sets or clears the public addresses. |
+| `GET` | `/firewall` | Lists the firewall rules. |
+| `PUT` | `/firewall` | Replaces all the firewall rules. |
 
 ### PUT /network/bandwidth
 
@@ -113,6 +115,36 @@ The values are in bits for each second. A value of `0` means no limit. The `tc` 
 ```
 
 An empty string clears that address. The NAT rules change immediately, and the VM does not stop. The guest always sees only its private address.
+
+### GET /firewall
+
+```json
+{ "ingress": [{ "protocol": "tcp", "port": 22 }], "egress": [{ "protocol": "all" }] }
+```
+
+Both lists are always present. They are empty when no `[firewall]` section exists in `config.toml`.
+
+### PUT /firewall
+
+```json
+{
+  "ingress": [
+    { "protocol": "tcp", "port": 22, "source": "203.0.113.0/24" },
+    { "protocol": "icmp" }
+  ],
+  "egress": [
+    { "protocol": "tcp", "port": 443 }
+  ]
+}
+```
+
+This replaces all the rules. An empty list denies all traffic in that direction. A rule has these fields:
+
+- `protocol` is `tcp`, `udp`, `icmp`, or `all`.
+- `port` is one port, or the start of a range. `port_end` ends the range.
+- `source` and `destination` are an optional IP or CIDR.
+
+There are no defaults. Without rules, the VM denies all traffic both ways, except that the guest may always send `udp/53` to `network.nameservers`. The change applies immediately, and the VM does not stop.
 
 ## Snapshots
 

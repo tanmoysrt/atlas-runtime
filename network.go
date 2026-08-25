@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -19,6 +20,7 @@ const (
 type Network struct {
 	instanceID string
 	config     NetworkConfig
+	firewall   FirewallConfig
 	TapName    string
 	namespace  string
 	nodeConfig *NodeConfig
@@ -27,8 +29,8 @@ type Network struct {
 	watchDone  chan struct{}
 }
 
-func NewNetwork(instanceID string, config NetworkConfig, nodeConfig *NodeConfig, beacon *BeaconClient) *Network {
-	return &Network{instanceID: instanceID, config: config, nodeConfig: nodeConfig, beacon: beacon}
+func NewNetwork(instanceID string, config NetworkConfig, firewall FirewallConfig, nodeConfig *NodeConfig, beacon *BeaconClient) *Network {
+	return &Network{instanceID: instanceID, config: config, firewall: firewall, nodeConfig: nodeConfig, beacon: beacon}
 }
 
 func (network *Network) NetnsName() string {
@@ -142,6 +144,10 @@ func (network *Network) SyncPublicIPv6(oldIP, newIP string) error {
 // The forward chain clamps the TCP MSS to the route MTU. A GRE tunnel to
 // another node holds 1472 bytes, not 1500, and the clamp must come before
 // the accept rules, because an accept ends the chain.
+//
+// The firewall lives in the fw chain, which ends in a drop rule. Forward jumps
+// to it only for this VM's own traffic, so packets of other VMs in the same
+// namespace pass through without hitting the drop.
 func (network *Network) setupNftables() {
 	uplink := network.uplink()
 	if uplink == "" {
@@ -158,6 +164,7 @@ add table inet %[1]s
 add chain inet %[1]s prerouting { type nat hook prerouting priority dstnat ; }
 add chain inet %[1]s postrouting { type nat hook postrouting priority srcnat ; }
 add chain inet %[1]s forward { type filter hook forward priority 0 ; }
+add chain inet %[1]s fw
 add map inet %[1]s dnat_map { type ipv4_addr : ipv4_addr ; }
 add map inet %[1]s dnat6_map { type ipv6_addr : ipv6_addr ; }
 add map inet %[1]s snat_map { type ipv4_addr : ipv4_addr ; }
@@ -168,11 +175,117 @@ add rule inet %[1]s postrouting snat to ip saddr map @snat_map
 add rule inet %[1]s postrouting snat to ip6 saddr map @snat6_map
 %[2]s
 add rule inet %[1]s forward tcp flags syn tcp option maxseg size set rt mtu
-add rule inet %[1]s forward iif %[3]q oif %[4]q accept
-add rule inet %[1]s forward iif %[4]q oif %[3]q ct state established,related accept
-`, table, masqueradeRule(network.config.Egress, table, uplink), network.TapName, uplink)
+add rule inet %[1]s forward ct state established,related accept
+add rule inet %[1]s forward iif %[3]q jump fw
+add rule inet %[1]s forward oif %[3]q jump fw
+%[4]s
+`, table, masqueradeRule(network.config.Egress, table, uplink), network.TapName, network.fwRules())
 
 	runScript(network.exec("nft", "-f", "-"), script)
+}
+
+// SetFirewall replaces the VM's firewall rules. When the network exists, the
+// fw chain is rebuilt atomically. Otherwise the rules apply at Create.
+func (network *Network) SetFirewall(firewall FirewallConfig) error {
+	network.firewall = firewall
+	if network.TapName == "" {
+		return nil
+	}
+
+	script := fmt.Sprintf("flush chain inet %s fw\n%s", network.table(), network.fwRules())
+	command := network.exec("nft", "-f", "-")
+	command.Stdin = strings.NewReader(script)
+	if output, err := command.CombinedOutput(); err != nil {
+		return fmt.Errorf("nft firewall: %w: %s", err, output)
+	}
+	return nil
+}
+
+// dnsRules renders the always-allowed DNS lookups to the configured
+// nameservers. This rule is not user-facing and cannot be removed.
+func (network *Network) dnsRules() string {
+	var builder strings.Builder
+	for _, nameserver := range network.config.Nameservers {
+		address := strings.TrimSpace(nameserver)
+		if address == "" {
+			continue
+		}
+		fmt.Fprintf(&builder, "add rule inet %s fw iif %q udp dport 53 %s accept\n",
+			network.table(), network.TapName, addrMatch(address, "daddr"))
+	}
+	return builder.String()
+}
+
+// fwRules renders every user firewall rule as full nft statements in the fw
+// chain, preceded by the internal DNS rules and followed by the drop that
+// gives the chain its deny-by-default policy. nft regular chains cannot set a
+// policy, so the drop is an explicit rule.
+func (network *Network) fwRules() string {
+	var builder strings.Builder
+	builder.WriteString(network.dnsRules())
+	for _, rule := range network.firewall.Ingress {
+		for _, line := range network.ruleLines("oif", rule) {
+			builder.WriteString(line)
+		}
+	}
+	for _, rule := range network.firewall.Egress {
+		for _, line := range network.ruleLines("iif", rule) {
+			builder.WriteString(line)
+		}
+	}
+	fmt.Fprintf(&builder, "add rule inet %s fw drop\n", network.table())
+	return builder.String()
+}
+
+// ruleLines renders one rule as one or more nft statements. icmp produces two
+// statements, one for each address family.
+func (network *Network) ruleLines(direction string, rule FirewallRule) []string {
+	match := direction + " " + network.TapName
+	if rule.Source != "" {
+		match += " " + addrMatch(rule.Source, "saddr")
+	}
+	if rule.Destination != "" {
+		match += " " + addrMatch(rule.Destination, "daddr")
+	}
+
+	switch rule.Protocol {
+	case "tcp", "udp":
+		port := strconv.Itoa(rule.Port)
+		if rule.PortEnd != 0 && rule.PortEnd != rule.Port {
+			port = strconv.Itoa(rule.Port) + "-" + strconv.Itoa(rule.PortEnd)
+		}
+		return []string{fmt.Sprintf("add rule inet %s fw %s %s dport %s accept\n", network.table(), match, rule.Protocol, port)}
+	case "icmp":
+		return []string{
+			fmt.Sprintf("add rule inet %s fw %s icmp type echo-request accept\n", network.table(), match),
+			fmt.Sprintf("add rule inet %s fw %s icmpv6 type echo-request accept\n", network.table(), match),
+		}
+	case "all":
+		return []string{fmt.Sprintf("add rule inet %s fw %s accept\n", network.table(), match)}
+	}
+	return nil
+}
+
+// addrMatch renders an nft address match for an IP or CIDR, with the correct
+// address family for the inet table.
+func addrMatch(address, field string) string {
+	return addrFamily(address) + " " + field + " " + address
+}
+
+// addrFamily reports whether an address is IPv4 or IPv6. It accepts a bare IP
+// or a CIDR. Anything unknown is treated as IPv6, which is the safe default
+// only after Validate has already accepted the address.
+func addrFamily(address string) string {
+	if ip, _, err := net.ParseCIDR(address); err == nil {
+		if ip.To4() != nil {
+			return "ip"
+		}
+		return "ip6"
+	}
+	if ip := net.ParseIP(address); ip != nil && ip.To4() != nil {
+		return "ip"
+	}
+	return "ip6"
 }
 
 func masqueradeRule(egress, table, uplink string) string {

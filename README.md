@@ -60,6 +60,13 @@ nameservers = ["1.1.1.1"]
 
 [rootfs]
 size = 4294967296
+
+[firewall]
+[[firewall.ingress]]
+protocol = "tcp"
+port = 22
+[[firewall.egress]]
+protocol = "all"
 ```
 
 Then start the runtime and the VM:

@@ -23,18 +23,27 @@ chroot "$MNT" apt-get install -y --no-install-recommends \
     systemd-sysv udev openssh-server curl iproute2 iputils-ping
 
 # fcnet.sh derives a static IPv4 and a matching IPv6 from the MAC address
-# (Firecracker convention) and writes resolv.conf. Both are unnumbered /32
+# (Firecracker convention) and writes resolv.conf from the nameservers Atlas
+# set in config.toml (see MMDS nameservers). Both are unnumbered /32
 # point-to-point addresses. The host side is a fixed constant (network.go's
 # tapHostAddress4/6), the same on every VM's TAP. Only the interface
 # identity matters for forwarding, not the address, so any two VMs can use
 # any two private IPs.
 cat > "$MNT/usr/local/bin/fcnet.sh" <<'EOF'
 #!/bin/bash
-NAMESERVERS="8.8.8.8 1.1.1.1"
+# Fetch the nameservers Atlas set in config.toml. Retry while MMDS comes up.
+NAMESERVERS=""
+for _ in 1 2 3 4 5; do
+    TOKEN=$(curl -fsSL -X PUT -H "X-metadata-token-ttl-seconds: 60" http://169.254.169.254/latest/api/token 2>/dev/null)
+    NAMESERVERS=$(curl -fsSL -H "X-metadata-token:$TOKEN" http://169.254.169.254/nameservers 2>/dev/null)
+    [ -n "$NAMESERVERS" ] && break
+    sleep 1
+done
 {
-    for ns in $NAMESERVERS; do
+    while IFS= read -r ns; do
+        [ -z "$ns" ] && continue
         echo "nameserver $ns"
-    done
+    done <<< "$NAMESERVERS"
 } > /etc/resolv.conf
 
 HOST4=169.254.1.1

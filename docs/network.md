@@ -131,3 +131,37 @@ The rule is for TCP only. A guest that sends UDP datagrams of more than 1472 byt
 ## Bandwidth
 
 The speed limits use `tc` on the TAP device, inside the VPC namespace. Set them with `network.ingress_bandwidth` and `network.egress_bandwidth`, or with `PUT /network/bandwidth`.
+
+## Firewall
+
+Each VM has a firewall, and both directions are deny-by-default. The rules live in the VM's nftables table, in a `fw` chain that ends with a `drop` rule. The `forward` chain jumps to it only for traffic of this VM, so other VMs in the same namespace are not affected.
+
+Set the rules in `config.toml`:
+
+```toml
+[firewall]
+[[firewall.ingress]]
+protocol = "tcp"
+port = 22
+source = "203.0.113.0/24"
+[[firewall.ingress]]
+protocol = "icmp"
+[[firewall.egress]]
+protocol = "tcp"
+port = 443
+destination = "10.0.0.0/8"
+```
+
+A rule has these fields:
+
+- `protocol` is `tcp`, `udp`, `icmp`, or `all`.
+- `port` is one port, or the start of a range. `port_end` ends the range. A `port_end` of `0` or equal to `port` means one port. `icmp` and `all` take no port.
+- `source` and `destination` are an IP or CIDR, and are optional. Empty means anywhere. On an ingress rule, `source` is the caller and `destination` is the guest. On an egress rule they are the opposite.
+
+There are no defaults. With no `[firewall]` section, the VM denies all traffic in both directions. One rule is always present and cannot be changed or removed through the API: the guest may send `udp/53` to the nameservers in `network.nameservers`. This is how the guest resolves names.
+
+The MMDS address `169.254.169.254` and the gateway `169.254.1.1` never cross the `forward` chain. Firecracker answers MMDS inside the VM, and the gateway is a local address of the namespace. The firewall therefore never blocks them.
+
+One caveat: DNAT and SNAT run around the `forward` hook. So on an ingress rule, `destination` matches the private address of the guest, never its public address. On an egress rule, `source` matches the private address.
+
+To change the rules while the VM runs, use `PUT /firewall`, or edit `config.toml` and send `POST /reload`. The `fw` chain is rebuilt atomically, and the VM does not stop.

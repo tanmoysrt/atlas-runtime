@@ -82,7 +82,7 @@ dd { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-
 .row { display: flex; gap: 6px; }
 .row + .row { margin-top: 6px; }
 
-button, input {
+button, input, select {
   height: var(--control);
   border: 0;
   border-radius: 6px;
@@ -111,6 +111,12 @@ input {
 }
 input:focus { outline: 1px solid var(--faint); outline-offset: -1px; }
 input::placeholder { color: var(--faint); font-family: var(--sans); }
+select {
+  flex: none;
+  padding: 0 6px;
+  font: 12px var(--sans);
+  color: var(--muted);
+}
 
 /* minmax and min-width let a long key shrink instead of widening the sidebar. */
 ul { list-style: none; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; margin-top: 12px; }
@@ -221,6 +227,25 @@ li code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: 
   </section>
 
   <section>
+    <h2>Firewall</h2>
+    <div class="row">
+      <select id="fw-dir">
+        <option value="ingress">in</option>
+        <option value="egress">out</option>
+      </select>
+      <input id="fw-protocol" placeholder="tcp / udp / icmp / all">
+      <input id="fw-port" type="number" min="1" max="65535" placeholder="Port">
+      <input id="fw-port-end" type="number" min="1" max="65535" placeholder="End">
+      <button onclick="addFirewallRule()">Add</button>
+    </div>
+    <div class="row">
+      <input id="fw-source" placeholder="Source (CIDR)">
+      <input id="fw-destination" placeholder="Dest (CIDR)">
+    </div>
+    <ul id="firewall"></ul>
+  </section>
+
+  <section>
     <h2>Maintenance</h2>
     <div class="row">
       <input id="in-snapshot" placeholder="Snapshot name">
@@ -302,6 +327,11 @@ async function refresh() {
   el('disk-io').textContent = [rootfs.bandwidth && rootfs.bandwidth + ' B/s',
     rootfs.iops && rootfs.iops + ' iops'].filter(Boolean).join(' · ') || 'unlimited';
   showKeys(info.config.ssh.authorized_keys || []);
+  firewall = {
+    ingress: info.config.firewall?.ingress || [],
+    egress: info.config.firewall?.egress || [],
+  };
+  renderFirewall();
 }
 
 function showKeys(keys) {
@@ -321,6 +351,60 @@ function showKeys(keys) {
     item.append(label, remove);
     return item;
   }));
+}
+
+let firewall = {ingress: [], egress: []};
+
+const formatRule = (rule, direction) =>
+  [direction, rule.protocol,
+   rule.port_end ? rule.port + '-' + rule.port_end : (rule.port || ''),
+   rule.source ? 'from ' + rule.source : '',
+   rule.destination ? 'to ' + rule.destination : ''].filter(Boolean).join(' ');
+
+function renderFirewall() {
+  const items = [];
+  const add = (rules, direction) => rules.forEach((rule, index) => {
+    const item = document.createElement('li');
+    const label = document.createElement('code');
+    label.textContent = formatRule(rule, direction);
+    label.title = label.textContent;
+    const remove = document.createElement('button');
+    remove.className = 'link';
+    remove.textContent = 'remove';
+    remove.onclick = () => {
+      firewall[direction].splice(index, 1);
+      saveFirewall();
+    };
+    item.append(label, remove);
+    items.push(item);
+  });
+  add(firewall.ingress, 'ingress');
+  add(firewall.egress, 'egress');
+  if (!items.length) {
+    el('firewall').innerHTML = '<li class="empty">No rules (all denied)</li>';
+    return;
+  }
+  el('firewall').replaceChildren(...items);
+}
+
+function saveFirewall() {
+  call('firewall', 'PUT', '/firewall', firewall);
+}
+
+function addFirewallRule() {
+  const protocol = text('fw-protocol').toLowerCase();
+  if (!protocol) return toast('firewall: need a protocol');
+  const direction = el('fw-dir').value;
+  firewall[direction].push({
+    protocol,
+    port: number('fw-port'),
+    port_end: number('fw-port-end'),
+    source: text('fw-source'),
+    destination: text('fw-destination'),
+  });
+  ['fw-protocol', 'fw-port', 'fw-port-end', 'fw-source', 'fw-destination']
+    .forEach(id => el(id).value = '');
+  saveFirewall();
 }
 
 function resize() {

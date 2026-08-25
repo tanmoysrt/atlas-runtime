@@ -68,6 +68,8 @@ func (api *API) Serve(ctx context.Context, address string) error {
 	// Network and snapshot endpoints.
 	serveMux.HandleFunc("PUT /network/bandwidth", api.handleBandwidth)
 	serveMux.HandleFunc("PUT /network/public-ip", api.handlePublicIP)
+	serveMux.HandleFunc("GET /firewall", api.handleFirewallGet)
+	serveMux.HandleFunc("PUT /firewall", api.handleFirewallPut)
 	serveMux.HandleFunc("POST /snapshot", api.handleSnapshot)
 
 	server := &http.Server{Addr: address, Handler: serveMux}
@@ -258,6 +260,26 @@ func (api *API) handlePublicIP(writer http.ResponseWriter, request *http.Request
 	if err := api.mutateConfig(func(config *Config) {
 		config.Network.PublicIPv4 = body.IPv4
 		config.Network.PublicIPv6 = body.IPv6
+	}); err != nil {
+		http.Error(writer, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// handleFirewallGet returns the current firewall rules as empty lists when none are set.
+func (api *API) handleFirewallGet(writer http.ResponseWriter, request *http.Request) {
+	json.NewEncoder(writer).Encode(api.runtime.config.Firewall.nonNil())
+}
+
+// handleFirewallPut replaces the whole firewall. Empty lists deny all traffic
+// except the internal DNS rule.
+func (api *API) handleFirewallPut(writer http.ResponseWriter, request *http.Request) {
+	var body FirewallConfig
+	if !api.decode(writer, request, &body) {
+		return
+	}
+	body = body.nonNil()
+	if err := api.mutateConfig(func(config *Config) {
+		config.Firewall = body
 	}); err != nil {
 		http.Error(writer, err.Error(), http.StatusInternalServerError)
 	}

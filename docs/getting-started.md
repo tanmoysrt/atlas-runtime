@@ -79,12 +79,25 @@ size = 8589934592   # bytes
 
 [ssh]
 authorized_keys = ["ssh-ed25519 AAAA..."]
+
+[firewall]
+[[firewall.ingress]]
+protocol = "tcp"
+port = 22
+[[firewall.ingress]]
+protocol = "icmp"
+[[firewall.egress]]
+protocol = "all"
 ```
 
 Two notes on this file:
 
 - Atlas reads `[boot]` only at the first start. After that, a change to `image`, `snapshot`, `kernel`, or `hostname` has no result. To use a new value, make a new machine directory.
 - `network.address` is one address, and it needs no mask. Atlas makes the MAC of the guest from it.
+
+### The firewall
+
+Both directions are deny-by-default. With no `[firewall]` section, the guest cannot be reached and cannot reach out, except for DNS to the nameservers in `network.nameservers`. To reach the guest over SSH, add the `tcp/22` ingress rule above. `protocol = "all"` allows everything in that direction. Read [network.md](network.md) for the full rules.
 
 ## Run a script in the guest
 

@@ -49,7 +49,7 @@ func NewRuntime(configPath string, config *Config, nodeConfig *NodeConfig, beaco
 	}
 
 	instance.firecracker = NewFirecracker(instance.runtimeDir)
-	instance.network = NewNetwork(instance.meta.InstanceID, config.Network, nodeConfig, beacon)
+	instance.network = NewNetwork(instance.meta.InstanceID, config.Network, config.Firewall, nodeConfig, beacon)
 	instance.console = NewConsole(filepath.Join(machineDir, "console.log"))
 	return instance, nil
 }
@@ -235,6 +235,7 @@ func (instance *Runtime) Snapshot(snapshotID string) error {
 
 func (instance *Runtime) applyConfig(config *Config) error {
 	instance.config = config
+	instance.network.config = config.Network
 
 	if instance.firecracker.Running() {
 		_ = instance.firecracker.UpdateMMDS(instance.mmdsData())
@@ -244,7 +245,10 @@ func (instance *Runtime) applyConfig(config *Config) error {
 	if err := instance.applyPublicIPs(); err != nil {
 		return err
 	}
-	return instance.network.SetBandwidth(config.Network.IngressBandwidth, config.Network.EgressBandwidth)
+	if err := instance.network.SetBandwidth(config.Network.IngressBandwidth, config.Network.EgressBandwidth); err != nil {
+		return err
+	}
+	return instance.network.SetFirewall(config.Firewall)
 }
 
 func (instance *Runtime) applyPublicIPs() error {
@@ -264,6 +268,7 @@ func (instance *Runtime) mmdsData() map[string]any {
 		"instance-id":    instance.meta.InstanceID,
 		"local-hostname": instance.meta.Hostname,
 		"private-ip":     instance.meta.PrivateIP,
+		"nameservers":    strings.Join(instance.config.Network.Nameservers, "\n"),
 		"ssh":            map[string]any{"authorized_keys": strings.Join(instance.config.SSH.AuthorizedKeys, "\n")},
 		"cloud-init":     map[string]any{"user-data": instance.config.CloudInit.UserData},
 	}
