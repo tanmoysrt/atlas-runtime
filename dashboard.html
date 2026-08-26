@@ -171,6 +171,8 @@ li code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: 
       <dt>Memory</dt><dd id="memory">—</dd>
       <dt>Disk</dt><dd id="disk">—</dd>
       <dt>Disk I/O</dt><dd id="disk-io">—</dd>
+      <dt>Public IP</dt><dd id="public-ip">—</dd>
+      <dt>Net I/O</dt><dd id="net-io">—</dd>
     </dl>
   </section>
 
@@ -303,7 +305,7 @@ async function call(label, method, path, body) {
   try {
     await send(method, path, body);
     toast(label + ' ok');
-    refresh();
+    refresh(true);
   } catch (error) {
     toast(label + ': ' + error.message);
   }
@@ -311,7 +313,7 @@ async function call(label, method, path, body) {
 
 const megabytes = bytes => Math.round(bytes / (1 << 20)) + ' MB';
 
-async function refresh() {
+async function refresh(fillInputs) {
   let info;
   try {
     info = JSON.parse(await send('GET', '/info'));
@@ -330,6 +332,11 @@ async function refresh() {
   el('disk').textContent = megabytes(rootfs.size);
   el('disk-io').textContent = [rootfs.bandwidth && rootfs.bandwidth + ' B/s',
     rootfs.iops && rootfs.iops + ' iops'].filter(Boolean).join(' · ') || 'unlimited';
+  const network = info.config.network;
+  el('public-ip').textContent = [network.public_ipv4, network.public_ipv6].filter(Boolean).join(' · ') || 'none';
+  el('net-io').textContent = [network.ingress_bandwidth && network.ingress_bandwidth + ' bps in',
+    network.egress_bandwidth && network.egress_bandwidth + ' bps out'].filter(Boolean).join(' · ') || 'unlimited';
+  if (fillInputs) fillConfig(info);
   showKeys(info.config.ssh.authorized_keys || []);
   firewall = {
     ingress: info.config.firewall?.ingress || [],
@@ -337,6 +344,21 @@ async function refresh() {
   };
   renderFirewall();
   showSnapshots();
+}
+
+// fillConfig writes the saved configuration into the input fields. It runs on
+// load and after an action, not on the timer.
+function fillConfig(info) {
+  const {resources, rootfs, network} = info.config;
+  el('in-cpus').value = resources.cpus || '';
+  el('in-memory').value = resources.memory ? Math.round(resources.memory / (1 << 20)) : '';
+  el('in-ingress').value = network.ingress_bandwidth || '';
+  el('in-egress').value = network.egress_bandwidth || '';
+  el('in-size').value = rootfs.size ? Math.round(rootfs.size / (1 << 20)) : '';
+  el('in-bandwidth').value = rootfs.bandwidth || '';
+  el('in-iops').value = rootfs.iops || '';
+  el('in-ipv4').value = network.public_ipv4 || '';
+  el('in-ipv6').value = network.public_ipv6 || '';
 }
 
 function showKeys(keys) {
@@ -536,8 +558,8 @@ async function connect() {
   }
 }
 
-refresh();
-setInterval(refresh, 5000);
+refresh(true);
+setInterval(() => refresh(), 5000);
 connect();
 </script>
 </body>

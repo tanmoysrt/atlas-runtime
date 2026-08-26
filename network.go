@@ -190,7 +190,7 @@ add rule inet %[1]s forward ct state established,related accept
 add rule inet %[1]s forward iif %[3]q jump fw
 add rule inet %[1]s forward oif %[3]q jump fw
 %[4]s
-`, table, masqueradeRule(network.config.Egress, table, uplink), network.TapName, network.fwRules())
+`, table, masqueradeRules(network.config, table, uplink), network.TapName, network.fwRules())
 
 	runScript(network.exec("nft", "-f", "-"), script)
 }
@@ -299,11 +299,43 @@ func addrFamily(address string) string {
 	return "ip6"
 }
 
-func masqueradeRule(egress, table, uplink string) string {
-	if egress != "host" {
-		return ""
+// masqueradeRules renders the NAT to the uplink veth address, for a VM with
+// no public address. IPv4 follows network.egress_v4, IPv6 network.egress_v6.
+// IPv6 also needs a global IPv6 on the host.
+func masqueradeRules(config NetworkConfig, table, uplink string) string {
+	var builder strings.Builder
+	if config.EgressV4 == "host" {
+		fmt.Fprintf(&builder, "add rule inet %s postrouting oif %q meta nfproto ipv4 masquerade\n", table, uplink)
 	}
-	return fmt.Sprintf("add rule inet %s postrouting oif %q masquerade", table, uplink)
+	if config.EgressV6 == "host" && hasHostGlobalIPv6() {
+		fmt.Fprintf(&builder, "add rule inet %s postrouting oif %q meta nfproto ipv6 masquerade\n", table, uplink)
+	}
+	return strings.TrimRight(builder.String(), "\n")
+}
+
+// hasHostGlobalIPv6 reports whether the host has an IPv6 address that the
+// internet can reach. A unique local address does not count.
+func hasHostGlobalIPv6() bool {
+	output, err := exec.Command("ip", "-6", "addr", "show", "scope", "global").Output()
+	if err != nil {
+		return false
+	}
+	for _, field := range strings.Fields(string(output)) {
+		address, _, err := net.ParseCIDR(field)
+		if err != nil || address.To4() != nil {
+			continue
+		}
+		if address.IsGlobalUnicast() && !uniqueLocalIPv6(address) {
+			return true
+		}
+	}
+	return false
+}
+
+// uniqueLocalIPv6 reports whether an address is in fc00::/7.
+func uniqueLocalIPv6(address net.IP) bool {
+	address = address.To16()
+	return address != nil && address[0]&0xfe == 0xfc
 }
 
 func (network *Network) deleteNftables() {

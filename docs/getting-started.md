@@ -71,7 +71,7 @@ hostname = "vm-001"
 [network]
 vpc = 1
 address = "10.0.0.10"
-egress = "host"
+egress_v4 = "host"
 nameservers = ["1.1.1.1"]
 
 [rootfs]

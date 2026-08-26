@@ -42,12 +42,22 @@ The veth uses only the top half of `169.254.0.0/16`. This keeps it away from `16
 
 ## Egress to the internet
 
-Set `network.egress = "host"`. Traffic that leaves through the uplink crosses two NAT points:
+Set `network.egress_v4 = "host"`. Traffic that leaves through the uplink crosses two NAT points:
 
 1. In the VPC namespace, `MASQUERADE` changes the private address of the guest to the address of the veth.
 2. In root, the shared `atlas-uplink` table changes the address of the veth to the real address of the host.
 
 Two steps are necessary. One masquerade to the physical card is not enough. If two VPCs use the same private address, the reverse NAT in root finds that address before root selects a route.
+
+Both steps match only a veth source address. A VM that has a public address keeps that address, because the namespace already put it in the packet.
+
+### IPv6
+
+`network.egress_v4` is IPv4. IPv6 has `network.egress_v6`. Both accept `"none"` and `"host"`, and the default is `"none"`. Any other value is reported on stderr and read as `"none"`, so a wrong value does not stop the VM.
+
+`"host"` needs a global IPv6 on the host. Atlas looks for one that is not in `fc00::/7`, and makes the IPv6 rules only when it finds one. Without it there is no source address for the NAT, and the packet would leave with a private address that no reply can reach.
+
+A VM that has `public_ipv6` does not use this. It goes out with its own address, and `egress_v6` has no effect on it.
 
 ## Public addresses
 

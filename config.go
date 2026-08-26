@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"net"
+	"os"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -44,7 +46,8 @@ type BootConfig struct {
 type NetworkConfig struct {
 	VPC              int      `toml:"vpc" json:"vpc"`
 	Address          string   `toml:"address" json:"address"`
-	Egress           string   `toml:"egress" json:"egress"`
+	EgressV4         string   `toml:"egress_v4" json:"egress_v4"`
+	EgressV6         string   `toml:"egress_v6" json:"egress_v6"`
 	IngressBandwidth int64    `toml:"ingress_bandwidth" json:"ingress_bandwidth"`
 	EgressBandwidth  int64    `toml:"egress_bandwidth" json:"egress_bandwidth"`
 	Nameservers      []string `toml:"nameservers" json:"nameservers"`
@@ -93,7 +96,22 @@ func LoadConfig(path string) (*Config, error) {
 	if _, err := toml.DecodeFile(path, &config); err != nil {
 		return nil, fmt.Errorf("decode config: %w", err)
 	}
+	config.Network.EgressV4 = egressValue("egress_v4", config.Network.EgressV4)
+	config.Network.EgressV6 = egressValue("egress_v6", config.Network.EgressV6)
 	return &config, nil
+}
+
+// egressValue accepts "none" and "host". Any other value is reported on
+// stderr and read as "none".
+func egressValue(field, value string) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "host":
+		return "host"
+	case "", "none":
+		return "none"
+	}
+	fmt.Fprintf(os.Stderr, "network.%s: %q is not \"none\" or \"host\", using \"none\"\n", field, value)
+	return "none"
 }
 
 // SaveConfig writes config.toml atomically: temp file -> fsync -> rename.

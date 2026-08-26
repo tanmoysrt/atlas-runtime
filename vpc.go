@@ -122,17 +122,26 @@ func createVeth(vpcID int, namespace, rootVeth, namespaceVeth string) {
 	})
 }
 
+// ensureUplinkTable makes the NAT that the VPC uplinks share in the root
+// namespace. It masquerades a veth source address only, and holds the IPv6
+// rule only when the host has a global IPv6. The flush keeps veth_set.
 func ensureUplinkTable(rootVeth string) {
-	if exec.Command("nft", "list", "table", "inet", "atlas-uplink").Run() != nil {
-		script := `
+	script := fmt.Sprintf(`
 add table inet atlas-uplink
 add chain inet atlas-uplink postrouting { type nat hook postrouting priority srcnat ; }
 add set inet atlas-uplink veth_set { type ifname ; }
-add rule inet atlas-uplink postrouting iifname @veth_set masquerade
-`
-		runScript(exec.Command("nft", "-f", "-"), script)
-	}
+flush chain inet atlas-uplink postrouting
+add rule inet atlas-uplink postrouting iifname @veth_set ip saddr %s masquerade
+%s`, vethRange4, uplinkRule6())
+	runScript(exec.Command("nft", "-f", "-"), script)
 	exec.Command("nft", "add", "element", "inet", "atlas-uplink", "veth_set", "{ "+rootVeth+" }").Run()
+}
+
+func uplinkRule6() string {
+	if !hasHostGlobalIPv6() {
+		return ""
+	}
+	return fmt.Sprintf("add rule inet atlas-uplink postrouting iifname @veth_set ip6 saddr %s masquerade\n", vethRange6)
 }
 
 const networkLockPath = "/run/atlas-network.lock"
@@ -158,6 +167,12 @@ func vpcVethNames(vpcID int) (rootSide, namespaceSide string) {
 }
 
 const vethRangeStart = 0x8000
+
+// The full ranges that vpcVethAddress4 and vpcVethAddress6 draw from.
+const (
+	vethRange4 = "169.254.128.0/17"
+	vethRange6 = "fd01::/112"
+)
 
 func vpcVethAddress4(vpcID int) (rootAddr, namespaceAddr string) {
 	base := vethRangeStart | ((vpcID * 2) & 0x7FFE)
