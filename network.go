@@ -190,7 +190,7 @@ add rule inet %[1]s forward ct state established,related accept
 add rule inet %[1]s forward iif %[3]q jump fw
 add rule inet %[1]s forward oif %[3]q jump fw
 %[4]s
-`, table, masqueradeRules(network.config, table, uplink), network.TapName, network.fwRules())
+`, table, network.masqueradeRules(table, uplink), network.TapName, network.fwRules())
 
 	runScript(network.exec("nft", "-f", "-"), script)
 }
@@ -302,13 +302,18 @@ func addrFamily(address string) string {
 // masqueradeRules renders the NAT to the uplink veth address, for a VM with
 // no public address. IPv4 follows network.egress_v4, IPv6 network.egress_v6.
 // IPv6 also needs a global IPv6 on the host.
-func masqueradeRules(config NetworkConfig, table, uplink string) string {
+//
+// Every VM of a VPC shares the namespace, so each rule matches the address of
+// its own guest. Without that match it would also carry the other VMs.
+func (network *Network) masqueradeRules(table, uplink string) string {
 	var builder strings.Builder
-	if config.EgressV4 == "host" {
-		fmt.Fprintf(&builder, "add rule inet %s postrouting oif %q meta nfproto ipv4 masquerade\n", table, uplink)
+	if network.config.EgressV4 == "host" {
+		fmt.Fprintf(&builder, "add rule inet %s postrouting oif %q ip saddr %s masquerade\n",
+			table, uplink, network.guestAddress())
 	}
-	if config.EgressV6 == "host" && hasHostGlobalIPv6() {
-		fmt.Fprintf(&builder, "add rule inet %s postrouting oif %q meta nfproto ipv6 masquerade\n", table, uplink)
+	if network.config.EgressV6 == "host" && hasHostGlobalIPv6() {
+		fmt.Fprintf(&builder, "add rule inet %s postrouting oif %q ip6 saddr %s masquerade\n",
+			table, uplink, network.guestAddress6IP())
 	}
 	return strings.TrimRight(builder.String(), "\n")
 }
