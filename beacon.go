@@ -14,7 +14,7 @@ import (
 )
 
 // BeaconClient talks to the beacon KV service.
-// It supports PUT / DELETE / LIST over HTTP and live change streaming
+// It supports PUT / DELETE over HTTP and live change streaming
 // over WebSocket on /events.
 type BeaconClient struct {
 	endpoint string
@@ -48,35 +48,6 @@ func (b *BeaconClient) Put(key, value string, labels map[string]string) error {
 // watchers see the deletion.
 func (b *BeaconClient) Delete(key string) error {
 	return b.do("DELETE", "/objects/"+key, nil)
-}
-
-// List queries objects by prefix and label filters.
-func (b *BeaconClient) List(prefix string, labels map[string]string) ([]BeaconObject, error) {
-	u, _ := url.Parse(b.endpoint + "/objects")
-	q := u.Query()
-	if prefix != "" {
-		q.Set("prefix", prefix)
-	}
-	for k, v := range labels {
-		q.Set("label."+k, v)
-	}
-	u.RawQuery = q.Encode()
-
-	resp, err := b.client.Get(u.String())
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("beacon list: %d", resp.StatusCode)
-	}
-	var result struct {
-		Objects []BeaconObject `json:"objects"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-	return result.Objects, nil
 }
 
 // watchOnce opens one WebSocket to /events, subscribes to matching labels,
