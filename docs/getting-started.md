@@ -99,6 +99,28 @@ Two notes on this file:
 
 Both directions are deny-by-default. With no `[firewall]` section, the guest cannot be reached and cannot reach out, except for DNS to the nameservers in `network.nameservers`. To reach the guest over SSH, add the `tcp/22` ingress rule above. `protocol = "all"` allows everything in that direction. Read [network.md](network.md) for the full rules.
 
+## Start from a snapshot
+
+`POST /snapshot` copies the rootfs of a running VM to `/var/lib/atlas/snapshots/<vm-id>/<snapshot-id>/`:
+
+```bash
+curl -X POST http://127.0.0.1:9101/snapshot
+```
+
+There is no restore endpoint. A snapshot is a boot source, so you start it as a new VM. Make a second machine directory, and use `snapshot` in place of `image`:
+
+```toml
+[boot]
+snapshot = "vm-001/snap-k3f9x2mq7b"
+kernel = "file:///var/lib/atlas/images/vmlinux"
+cmdline = "console=ttyS0 reboot=k panic=1 pci=off"
+hostname = "vm-002"
+```
+
+Give the new VM its own `listen` address and its own `network.address`, because the first VM keeps the ones that it has. `rootfs.size` must not be smaller than the rootfs of the snapshot. Read [disk.md](disk.md) for the snapshots.
+
+A snapshot holds the disk only, and no memory. The new VM does a normal cold boot.
+
 ## Run a script in the guest
 
 Add a `[cloud_init]` section to give the guest a script. Atlas sends the text through MMDS, and the guest runs it at each start:
