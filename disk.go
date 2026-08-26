@@ -50,41 +50,6 @@ func GrowRootfs(path string, size int64, resizeFilesystem bool) error {
 	return nil
 }
 
-// SetupProjectQuota initializes an XFS project quota for a VM directory.
-// It assigns a deterministic project ID derived from the instance ID and sets a hard byte limit.
-// If the underlying filesystem is not XFS, or xfs_quota is unavailable, this returns nil
-// so that the VM can still start without quota enforcement.
-func SetupProjectQuota(machineDirectory string, instanceID string, sizeBytes int64) error {
-	mountPoint, ok := xfsMountPoint(machineDirectory)
-	if !ok {
-		return nil
-	}
-
-	projectID := projectIDFromInstance(instanceID)
-	exec.Command("xfs_quota", "-x",
-		"-c", fmt.Sprintf("project -s -p %s %d", machineDirectory, projectID),
-		"-c", fmt.Sprintf("limit -p bhard=%d %d", sizeBytes, projectID),
-		mountPoint,
-	).Run()
-	return nil
-}
-
-// RemoveProjectQuota clears the XFS project quota for a VM directory.
-// If the underlying filesystem is not XFS, or xfs_quota is unavailable, this returns nil.
-func RemoveProjectQuota(machineDirectory string, instanceID string) error {
-	mountPoint, ok := xfsMountPoint(machineDirectory)
-	if !ok {
-		return nil
-	}
-
-	projectID := projectIDFromInstance(instanceID)
-	exec.Command("xfs_quota", "-x",
-		"-c", fmt.Sprintf("limit -p bhard=0 %d", projectID),
-		mountPoint,
-	).Run()
-	return nil
-}
-
 // ficlone is FICLONE from linux/fs.h, that is _IOW(0x94, 9, int). The value
 // is the same on amd64 and on arm64.
 const ficlone = 0x40049409
@@ -144,30 +109,4 @@ func syncFile(path string) error {
 	}
 	defer file.Close()
 	return file.Sync()
-}
-
-// projectIDFromInstance derives a deterministic numeric project ID from an instance ID string.
-func projectIDFromInstance(instanceID string) uint32 {
-	var hash uint32 = 5381
-	for _, character := range instanceID {
-		hash = ((hash << 5) + hash) + uint32(character)
-	}
-	if hash == 0 {
-		hash = 1
-	}
-	return hash
-}
-
-// xfsMountPoint returns the mount point for path if it is on an XFS filesystem.
-// ok is false if the mount point cannot be determined or is not XFS.
-func xfsMountPoint(path string) (mountPoint string, ok bool) {
-	output, err := exec.Command("findmnt", "-n", "-o", "TARGET,FSTYPE", "--target", path).Output()
-	if err != nil {
-		return "", false
-	}
-	fields := strings.Fields(string(output))
-	if len(fields) != 2 || fields[1] != "xfs" {
-		return "", false
-	}
-	return fields[0], true
 }

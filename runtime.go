@@ -12,7 +12,6 @@ import (
 
 // Runtime is the orchestrator. It owns config, metadata, firecracker, network, and console.
 type Runtime struct {
-	machineDir    string
 	atlasDir      string // the parent of the machines directory, normally /var/lib/atlas
 	snapshotsDir  string
 	runtimeDir    string
@@ -32,7 +31,6 @@ func NewRuntime(configPath string, config *Config, nodeConfig *NodeConfig, beaco
 	machineDir := filepath.Dir(configPath)
 	atlasDir := filepath.Dir(filepath.Dir(machineDir))
 	instance := &Runtime{
-		machineDir:   machineDir,
 		atlasDir:     atlasDir,
 		snapshotsDir: filepath.Join(atlasDir, "snapshots"),
 		runtimeDir:   filepath.Join(machineDir, "runtime"),
@@ -118,9 +116,6 @@ func (instance *Runtime) initialize() error {
 	if err := PrepareRootfs(source, instance.rootfsPath, instance.config.Rootfs.Size); err != nil {
 		return fmt.Errorf("prepare rootfs: %w", err)
 	}
-	if err := SetupProjectQuota(instance.machineDir, instance.meta.InstanceID, instance.config.Rootfs.Size); err != nil {
-		return fmt.Errorf("quota: %w", err)
-	}
 
 	instance.meta.Initialized = true
 	instance.meta.PrivateIP = instance.config.Network.Address
@@ -148,7 +143,6 @@ func (instance *Runtime) Stop() error {
 	SaveMetadata(instance.metaPath, instance.meta)
 
 	_ = instance.network.Delete()
-	_ = RemoveProjectQuota(instance.machineDir, instance.meta.InstanceID)
 	return nil
 }
 
@@ -187,9 +181,6 @@ func (instance *Runtime) ResizeRootfs(sizeBytes, bandwidth int64, iops int) erro
 			if err := instance.firecracker.SetRootfsSize(instance.rootfsPath); err != nil {
 				return err
 			}
-		}
-		if err := SetupProjectQuota(instance.machineDir, instance.meta.InstanceID, sizeBytes); err != nil {
-			return err
 		}
 		config.Rootfs.Size = sizeBytes
 	}

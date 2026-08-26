@@ -156,18 +156,18 @@ curl -X POST http://127.0.0.1:9101/start
 
 At the first `POST /start`, Atlas makes the rootfs, builds the network, and starts Firecracker. `POST /stop` stops the VM. Read [api.md](api.md) for all the endpoints.
 
-## Disk quotas, optional
+## The filesystem, optional
 
-A quota needs the machine directory on an XFS filesystem. Mount a disk at `/var/lib/atlas` and install `xfsprogs`:
+Atlas makes each rootfs and each snapshot as a copy-on-write clone. A clone is immediate, and it uses almost no more disk space. This needs XFS with `reflink=1`, or Btrfs. Mount such a disk at `/var/lib/atlas`:
 
 ```bash
-mkfs.xfs /dev/sdb
+dnf install -y xfsprogs   # or: apt-get install -y xfsprogs
+mkfs.xfs /dev/sdb         # reflink=1 is the default
 mkdir -p /var/lib/atlas
 mount /dev/sdb /var/lib/atlas
-dnf install -y xfsprogs   # or: apt-get install -y xfsprogs
 ```
 
-Without XFS, Atlas does not make a quota, and the VM still starts.
+On a filesystem that cannot do reflink, Atlas makes a normal copy instead. The VM still starts, but each new rootfs costs its own disk space, and a snapshot stops the VM for the length of the copy. Read [disk.md](disk.md).
 
 ## Next
 

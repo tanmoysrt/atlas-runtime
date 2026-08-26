@@ -35,7 +35,7 @@ Each file has one job. There are no packages below the root.
 | `console.go` | A ring buffer of 1 MiB, the serial reader, and the WebSocket. |
 | `api.go` | The HTTP handlers and the console WebSocket. |
 | `image.go` | Finds an image from `file://`, `http://`, or `https://`. |
-| `disk.go` | Clones or copies the rootfs. Grows it. Sets the project quota. |
+| `disk.go` | Clones or copies the rootfs. Grows it. |
 
 ## Dependencies
 
@@ -49,7 +49,6 @@ Atlas also calls these programs on the host:
 - `firecracker` runs the microVM. Atlas starts it with `nsenter`, inside the VPC namespace, because Firecracker opens the TAP device by name.
 - `ip`, `ip netns`, `nft`, and `tc` build the network.
 - `truncate`, `e2fsck`, and `resize2fs` grow the rootfs. Atlas asks for the copy-on-write clone itself, with the `FICLONE` ioctl, and uses `cp --sparse=always` when the filesystem cannot do reflink.
-- `xfs_quota` and `findmnt` set the disk quota. These are optional, and XFS only.
 
 ## More documents
 

@@ -19,7 +19,7 @@ Do not change the rootfs file of a snapshot. A VM that starts from a snapshot ma
 
 Set the size of the rootfs with `rootfs.size` in `config.toml`. The value is in bytes.
 
-On XFS, Atlas also makes a project quota. The quota holds the file to that size at the filesystem level. On other filesystems, Atlas does not make a quota. The VM still starts, but nothing holds the file to the size.
+The file has a fixed length, so the guest cannot use more space than this value.
 
 You can make the rootfs larger later with `POST /rootfs`. You cannot make it smaller. If the VM runs, the guest grows its own filesystem, because a udev rule in the image watches for the change of capacity.
 
